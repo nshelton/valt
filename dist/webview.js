@@ -53959,6 +53959,56 @@ ${content}</tr>
     return text.replace(/&/g, "&amp;").replace(/"/g, "&quot;");
   }
 
+  // src/webview/inlineParser.ts
+  var INLINE_RE = /\*\*([\s\S]*?)\*\*|\*((?!\*)[^*\n]*?)\*|`([^`\n]+)`|~~([\s\S]*?)~~|\[([^\]]*)\]\(([^)]+)\)/g;
+  function syn(marker) {
+    const s = document.createElement("span");
+    s.className = "md-syn";
+    s.textContent = marker;
+    return s;
+  }
+  function wrapEl(tag2, open, close, inner) {
+    const el = document.createElement(tag2);
+    el.appendChild(syn(open));
+    for (const n of renderInlineNodes(inner))
+      el.appendChild(n);
+    el.appendChild(syn(close));
+    return el;
+  }
+  function linkEl(text, href) {
+    const a = document.createElement("a");
+    a.className = "valt-wikilink";
+    a.appendChild(syn("["));
+    for (const n of renderInlineNodes(text))
+      a.appendChild(n);
+    a.appendChild(syn(`](${href})`));
+    return a;
+  }
+  function renderInlineNodes(text) {
+    const nodes = [];
+    const re = new RegExp(INLINE_RE.source, "g");
+    let last = 0;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+      if (m.index > last)
+        nodes.push(document.createTextNode(text.slice(last, m.index)));
+      if (m[1] !== void 0)
+        nodes.push(wrapEl("strong", "**", "**", m[1]));
+      else if (m[2] !== void 0)
+        nodes.push(wrapEl("em", "*", "*", m[2]));
+      else if (m[3] !== void 0)
+        nodes.push(wrapEl("code", "`", "`", m[3]));
+      else if (m[4] !== void 0)
+        nodes.push(wrapEl("s", "~~", "~~", m[4]));
+      else if (m[5] !== void 0)
+        nodes.push(linkEl(m[5], m[6]));
+      last = re.lastIndex;
+    }
+    if (last < text.length)
+      nodes.push(document.createTextNode(text.slice(last)));
+    return nodes;
+  }
+
   // src/webview/renderer.ts
   var renderer = new _Renderer();
   renderer.code = ({ text, lang }) => {
@@ -53967,23 +54017,6 @@ ${content}</tr>
     return `<pre><code class="hljs language-${language}">${highlighted}</code></pre>`;
   };
   marked.use({ renderer, async: false });
-  function renderDocument(markdown, filePath, webviewBaseUri, fileList) {
-    const tokens = marked.lexer(markdown);
-    const blockMap = /* @__PURE__ */ new Map();
-    const htmlParts = [];
-    let offset = 0;
-    tokens.forEach((token, i) => {
-      const raw = token.raw;
-      const isSpace = token.type === "space";
-      blockMap.set(i, { id: i, raw, start: offset, end: offset + raw.length, isSpace });
-      if (!isSpace) {
-        const html2 = renderBlockRaw(raw, filePath, webviewBaseUri, fileList);
-        htmlParts.push(`<div class="valt-block" data-block-id="${i}">${html2}</div>`);
-      }
-      offset += raw.length;
-    });
-    return { html: htmlParts.join(""), blockMap };
-  }
   function renderBlockRaw(raw, filePath, webviewBaseUri, fileList) {
     const decorated = applyDecorators(raw, filePath, fileList);
     const html2 = marked.parse(decorated);
@@ -53999,9 +54032,132 @@ ${content}</tr>
   function isRelativeUri(uri) {
     return !uri.startsWith("http://") && !uri.startsWith("https://") && !uri.startsWith("data:") && !uri.startsWith("vscode-webview-resource:");
   }
+  function buildDocumentDOM(markdown, filePath, webviewBaseUri, fileList) {
+    const tokens = marked.lexer(markdown);
+    const blockMap = /* @__PURE__ */ new Map();
+    const fragment = document.createDocumentFragment();
+    let offset = 0;
+    tokens.forEach((token, i) => {
+      const raw = token.raw;
+      const isSpace = token.type === "space";
+      const depth = "depth" in token ? token.depth : void 0;
+      blockMap.set(i, { id: i, raw, start: offset, end: offset + raw.length, isSpace, tokenType: token.type, depth });
+      if (!isSpace) {
+        fragment.appendChild(buildBlockElement(blockMap.get(i), filePath, webviewBaseUri, fileList));
+      }
+      offset += raw.length;
+    });
+    return { fragment, blockMap };
+  }
+  function buildBlockElement(block2, filePath, webviewBaseUri, fileList) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "valt-block";
+    wrapper.dataset.blockId = String(block2.id);
+    if (block2.isSpace)
+      return wrapper;
+    switch (block2.tokenType) {
+      case "heading":
+        wrapper.appendChild(buildHeading(block2));
+        break;
+      case "paragraph":
+        wrapper.appendChild(buildParagraph(block2));
+        break;
+      case "code":
+        wrapper.appendChild(buildCode(block2));
+        break;
+      case "blockquote":
+        wrapper.appendChild(buildBlockquote(block2));
+        break;
+      case "list":
+        wrapper.appendChild(buildList(block2));
+        break;
+      default:
+        wrapper.appendChild(buildFallback(block2, filePath, webviewBaseUri, fileList));
+        break;
+    }
+    return wrapper;
+  }
+  function makeEditable(extraClass) {
+    const div = document.createElement("div");
+    div.contentEditable = "true";
+    div.spellcheck = false;
+    div.className = ["valt-block-editor", extraClass].filter(Boolean).join(" ");
+    return div;
+  }
+  function buildHeading(block2) {
+    const depth = block2.depth ?? 1;
+    const marker = "#".repeat(depth) + " ";
+    const content = block2.raw.trimEnd().startsWith(marker) ? block2.raw.trimEnd().slice(marker.length) : block2.raw.trimEnd();
+    const div = makeEditable(`valt-editor-h${depth}`);
+    const ms = document.createElement("span");
+    ms.className = "md-syn md-heading-marker";
+    ms.textContent = marker;
+    div.appendChild(ms);
+    for (const n of renderInlineNodes(content))
+      div.appendChild(n);
+    return div;
+  }
+  function buildParagraph(block2) {
+    const div = makeEditable();
+    for (const n of renderInlineNodes(block2.raw.trimEnd()))
+      div.appendChild(n);
+    return div;
+  }
+  function buildCode(block2) {
+    const div = makeEditable("valt-editor-code");
+    div.textContent = block2.raw.trimEnd();
+    return div;
+  }
+  function buildBlockquote(block2) {
+    const div = makeEditable("valt-editor-blockquote");
+    const lines = block2.raw.trimEnd().split("\n");
+    lines.forEach((line, i) => {
+      if (i > 0)
+        div.appendChild(document.createTextNode("\n"));
+      const m = line.match(/^(>\s?)/);
+      if (m) {
+        const ms = document.createElement("span");
+        ms.className = "md-syn md-blockquote-marker";
+        ms.textContent = m[1];
+        div.appendChild(ms);
+        for (const n of renderInlineNodes(line.slice(m[1].length)))
+          div.appendChild(n);
+      } else {
+        for (const n of renderInlineNodes(line))
+          div.appendChild(n);
+      }
+    });
+    return div;
+  }
+  function buildList(block2) {
+    const div = makeEditable("valt-editor-list");
+    const lines = block2.raw.trimEnd().split("\n");
+    lines.forEach((line, i) => {
+      if (i > 0)
+        div.appendChild(document.createTextNode("\n"));
+      const m = line.match(/^(\s*(?:[-*+]|\d+\.)\s)/);
+      if (m) {
+        const ms = document.createElement("span");
+        ms.className = "md-list-marker";
+        ms.textContent = m[1];
+        div.appendChild(ms);
+        for (const n of renderInlineNodes(line.slice(m[1].length)))
+          div.appendChild(n);
+      } else {
+        for (const n of renderInlineNodes(line))
+          div.appendChild(n);
+      }
+    });
+    return div;
+  }
+  function buildFallback(block2, filePath, webviewBaseUri, fileList) {
+    const div = document.createElement("div");
+    div.className = "valt-block-static";
+    div.innerHTML = renderBlockRaw(block2.raw, filePath, webviewBaseUri, fileList);
+    return div;
+  }
 
   // src/webview/editor.ts
-  var activeBlockEl = null;
   var autocomplete = null;
   var DECORATOR_ITEMS = [
     { label: "datetime(...)", insert: "datetime(", kind: "decorator" },
@@ -54009,47 +54165,47 @@ ${content}</tr>
     { label: "status(...)", insert: "status(", kind: "decorator" }
   ];
   function initEditor(container, blockMap, ctx) {
-    container.querySelectorAll(".valt-block").forEach((el) => {
-      el.addEventListener("click", () => {
-        if (activeBlockEl)
-          return;
-        const id = parseInt(el.dataset.blockId ?? "-1");
-        const block2 = blockMap.get(id);
-        if (block2 && !block2.isSpace)
-          activateBlock(el, block2, ctx);
+    setupSelectionTracking();
+    container.querySelectorAll(".valt-block").forEach((blockEl) => {
+      const id = parseInt(blockEl.dataset.blockId ?? "-1");
+      const block2 = blockMap.get(id);
+      if (!block2 || block2.isSpace)
+        return;
+      const editable = blockEl.querySelector("[contenteditable]");
+      if (!editable)
+        return;
+      editable.addEventListener("input", () => handleAutocompleteInput(editable, ctx.fileList));
+      editable.addEventListener("keydown", (e) => handleKeydown(e, editable, block2));
+      editable.addEventListener("blur", () => {
+        setTimeout(() => finalizeEdit(editable, block2, ctx), 160);
       });
     });
   }
-  function activateBlock(blockEl, block2, ctx) {
-    activeBlockEl = blockEl;
-    blockEl.classList.add("is-editing");
-    const textarea = buildTextarea(block2.raw.trimEnd());
-    blockEl.innerHTML = "";
-    blockEl.appendChild(textarea);
-    autoGrow(textarea);
-    textarea.focus();
-    textarea.selectionStart = textarea.selectionEnd = textarea.value.length;
-    textarea.addEventListener("input", () => {
-      autoGrow(textarea);
-      handleAutocompleteInput(textarea, ctx.fileList);
-    });
-    textarea.addEventListener(
-      "keydown",
-      (e) => handleKeydown(e, textarea, block2, blockEl, ctx)
-    );
-    textarea.addEventListener("blur", () => {
-      setTimeout(() => finalizeEdit(blockEl, textarea, block2, ctx), 160);
+  function setupSelectionTracking() {
+    document.addEventListener("selectionchange", () => {
+      document.querySelectorAll(".cursor-here").forEach((el2) => {
+        el2.classList.remove("cursor-here");
+      });
+      const sel = window.getSelection();
+      if (!sel || sel.rangeCount === 0)
+        return;
+      const node = sel.anchorNode;
+      const el = node instanceof Element ? node : node?.parentElement;
+      el?.closest("strong, em, code, s, a")?.classList.add("cursor-here");
     });
   }
-  function buildTextarea(raw) {
-    const ta = document.createElement("textarea");
-    ta.className = "valt-block-editor";
-    ta.value = raw;
-    ta.spellcheck = false;
-    ta.autocomplete = "off";
-    return ta;
+  function getBlockText(el) {
+    return el.innerText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   }
-  function handleKeydown(e, textarea, block2, blockEl, ctx) {
+  function finalizeEdit(editable, block2, ctx) {
+    dismissAutocomplete();
+    const trailingWs = block2.raw.match(/\n+$/)?.[0] ?? "\n";
+    const newRaw = getBlockText(editable).trimEnd() + trailingWs;
+    if (newRaw !== block2.raw) {
+      ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block2.start, end: block2.end, newRaw });
+    }
+  }
+  function handleKeydown(e, editable, block2) {
     if (autocomplete) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -54063,7 +54219,7 @@ ${content}</tr>
       }
       if (e.key === "Enter" || e.key === "Tab") {
         e.preventDefault();
-        commitAutocomplete(textarea);
+        commitAutocomplete(editable);
         return;
       }
       if (e.key === "Escape") {
@@ -54071,29 +54227,13 @@ ${content}</tr>
         return;
       }
     }
-    if (e.key === "Escape") {
-      dismissAutocomplete();
-      blockEl.classList.remove("is-editing");
-      activeBlockEl = null;
-      blockEl.innerHTML = renderBlock(block2.raw, ctx.filePath, ctx.webviewBaseUri, ctx.fileList);
+    if (e.key === "Enter" && block2.tokenType === "heading") {
+      e.preventDefault();
+      editable.blur();
     }
   }
-  function finalizeEdit(blockEl, textarea, block2, ctx) {
-    if (!activeBlockEl)
-      return;
-    dismissAutocomplete();
-    activeBlockEl = null;
-    blockEl.classList.remove("is-editing");
-    const trailingWs = block2.raw.match(/\n+$/)?.[0] ?? "\n";
-    const newRaw = textarea.value.trimEnd() + trailingWs;
-    if (newRaw !== block2.raw) {
-      ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block2.start, end: block2.end, newRaw });
-    } else {
-      blockEl.innerHTML = renderBlock(block2.raw, ctx.filePath, ctx.webviewBaseUri, ctx.fileList);
-    }
-  }
-  function handleAutocompleteInput(textarea, fileList) {
-    const query = getAtQuery(textarea);
+  function handleAutocompleteInput(editable, fileList) {
+    const query = getAtQuery(editable);
     if (query === null) {
       dismissAutocomplete();
       return;
@@ -54103,12 +54243,21 @@ ${content}</tr>
       dismissAutocomplete();
       return;
     }
-    renderAutocomplete(textarea, items);
+    renderAutocomplete(editable, items);
   }
-  function getAtQuery(textarea) {
-    const before = textarea.value.slice(0, textarea.selectionStart);
+  function getAtQuery(editable) {
+    const before = getTextBeforeCaret(editable);
     const match = before.match(/@([a-zA-Z0-9_\-./ ]*)$/);
     return match ? match[1] : null;
+  }
+  function getTextBeforeCaret(el) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0)
+      return "";
+    const range = sel.getRangeAt(0).cloneRange();
+    range.selectNodeContents(el);
+    range.setEnd(sel.anchorNode, sel.anchorOffset);
+    return range.toString();
   }
   function buildItems(query, fileList) {
     const decorators = fuzzyFilter(query, DECORATOR_ITEMS, (i) => i.label.replace("(...)", ""));
@@ -54139,7 +54288,7 @@ ${content}</tr>
     }
     return qi === query.length ? 1 : 0;
   }
-  function renderAutocomplete(textarea, items) {
+  function renderAutocomplete(editable, items) {
     dismissAutocomplete();
     const dropdown = document.createElement("div");
     dropdown.className = "valt-autocomplete";
@@ -54156,19 +54305,22 @@ ${content}</tr>
       el.addEventListener("mousedown", (e) => {
         e.preventDefault();
         autocomplete.activeIndex = idx;
-        commitAutocomplete(textarea);
+        commitAutocomplete(editable);
       });
       dropdown.appendChild(el);
     });
-    positionNearCaret(dropdown, textarea);
+    positionNearCaret(dropdown);
     document.body.appendChild(dropdown);
     autocomplete = { dropdown, items, activeIndex: 0 };
   }
-  function positionNearCaret(dropdown, textarea) {
-    const { top, left } = caretPixelPos(textarea);
+  function positionNearCaret(dropdown) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0)
+      return;
+    const rect = sel.getRangeAt(0).getBoundingClientRect();
     dropdown.style.position = "fixed";
-    dropdown.style.top = `${top + 22}px`;
-    dropdown.style.left = `${Math.min(left, window.innerWidth - 260)}px`;
+    dropdown.style.top = `${rect.bottom + 4}px`;
+    dropdown.style.left = `${Math.min(rect.left, window.innerWidth - 260)}px`;
   }
   function shiftActive(delta) {
     if (!autocomplete)
@@ -54179,72 +54331,28 @@ ${content}</tr>
       el.classList.toggle("is-active", i === autocomplete.activeIndex);
     });
   }
-  function commitAutocomplete(textarea) {
+  function commitAutocomplete(editable) {
     if (!autocomplete)
       return;
     const item = autocomplete.items[autocomplete.activeIndex];
     if (!item)
       return;
-    const pos = textarea.selectionStart;
-    const before = textarea.value.slice(0, pos);
-    const after = textarea.value.slice(pos);
+    const before = getTextBeforeCaret(editable);
     const match = before.match(/@([a-zA-Z0-9_\-./ ]*)$/);
     if (!match)
       return;
-    const newBefore = before.slice(0, before.length - match[0].length) + "@" + item.insert;
-    textarea.value = newBefore + after;
-    textarea.selectionStart = textarea.selectionEnd = newBefore.length;
+    const sel = window.getSelection();
+    if (!sel)
+      return;
+    for (let i = 0; i < match[0].length; i++)
+      sel.modify("extend", "backward", "character");
+    document.execCommand("insertText", false, "@" + item.insert);
     dismissAutocomplete();
-    textarea.dispatchEvent(new Event("input"));
+    editable.dispatchEvent(new Event("input"));
   }
   function dismissAutocomplete() {
     autocomplete?.dropdown.remove();
     autocomplete = null;
-  }
-  function caretPixelPos(ta) {
-    const pos = ta.selectionStart;
-    const style = window.getComputedStyle(ta);
-    const mirror = document.createElement("div");
-    for (const prop of [
-      "fontFamily",
-      "fontSize",
-      "fontWeight",
-      "lineHeight",
-      "letterSpacing",
-      "padding",
-      "borderWidth",
-      "boxSizing",
-      "whiteSpace",
-      "wordBreak",
-      "overflowWrap"
-    ]) {
-      mirror.style[prop] = style[prop];
-    }
-    mirror.style.position = "fixed";
-    mirror.style.visibility = "hidden";
-    mirror.style.top = "-9999px";
-    mirror.style.left = "-9999px";
-    mirror.style.width = `${ta.offsetWidth}px`;
-    mirror.style.whiteSpace = "pre-wrap";
-    const before = document.createElement("span");
-    before.textContent = ta.value.slice(0, pos);
-    const caret2 = document.createElement("span");
-    caret2.textContent = "\u200B";
-    mirror.appendChild(before);
-    mirror.appendChild(caret2);
-    document.body.appendChild(mirror);
-    const taRect = ta.getBoundingClientRect();
-    const mirrorRect = mirror.getBoundingClientRect();
-    const caretRect = caret2.getBoundingClientRect();
-    document.body.removeChild(mirror);
-    return {
-      top: taRect.top + (caretRect.top - mirrorRect.top) - ta.scrollTop,
-      left: taRect.left + (caretRect.left - mirrorRect.left)
-    };
-  }
-  function autoGrow(ta) {
-    ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
   }
   function baseName2(filePath) {
     const name = filePath.replace(/\\/g, "/").split("/").pop() ?? filePath;
@@ -54594,65 +54702,122 @@ pre.stub-render {
   color: var(--text-muted);
 }
 
-/* \u2500\u2500 Block editing \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* \u2500\u2500 Block layout \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
 .valt-block {
   border-radius: var(--radius);
   padding: 2px 6px;
   margin: 0 -6px;
-  cursor: text;
   transition: background-color 0.1s;
   position: relative;
 }
 
-.valt-block:hover:not(.is-editing) {
-  background: rgba(255, 255, 255, 0.03);
-}
-
-.valt-block.is-editing {
-  background: transparent;
-  cursor: default;
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-
-/* Visually merge adjacent block margins so hover highlight looks clean */
-.valt-block > * {
-  margin-top: 0;
-  margin-bottom: 0;
+.valt-block:hover {
+  background: rgba(255, 255, 255, 0.025);
 }
 
 .valt-block + .valt-block {
-  margin-top: 1em;
+  margin-top: 0.75em;
 }
 
-/* \u2500\u2500 Block textarea \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+/* \u2500\u2500 Contenteditable block editor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
-/*
- * The textarea is styled to look like plain editable source \u2014 same font as
- * the VS Code editor (injected as CSS variables by the webview host), same
- * color as body text, transparent background.  A left accent stripe is the
- * only visual cue that the block is in edit mode.
- */
 .valt-block-editor {
   display: block;
   width: 100%;
-  font-family: var(--vscode-editor-font-family, var(--font-body));
-  font-size:   var(--vscode-editor-font-size,   inherit);
-  font-weight: var(--vscode-editor-font-weight, 400);
-  line-height: 1.7;
-  color: var(--text);
-  background: transparent;
-  border: none;
-  padding: 0;
-  margin: 0;
-  resize: none;
   outline: none;
-  overflow: hidden;
-  min-height: 1.5em;
-  box-sizing: border-box;
+  cursor: text;
+  white-space: pre-wrap;
+  word-wrap: break-word;
   caret-color: var(--accent);
+  line-height: 1.7;
 }
+
+/* \u2500\u2500 Heading editors \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-editor-h1 { font-size: 2rem;    font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
+.valt-editor-h2 { font-size: 1.4rem;  font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
+.valt-editor-h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
+.valt-editor-h4 { font-size: 1rem;    font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
+.valt-editor-h5 { font-size: 0.9rem;  font-weight: 600; letter-spacing: 0.06em;  line-height: 1.3; color: var(--text-muted); text-transform: uppercase; }
+.valt-editor-h6 { font-size: 0.85rem; font-weight: 400; line-height: 1.3; color: var(--text-muted); }
+
+/* \u2500\u2500 Code block editor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-editor-code {
+  font-family: var(--font-mono);
+  font-size: 0.85em;
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1em 1.2em;
+  color: var(--text-muted);
+  line-height: 1.6;
+}
+
+/* \u2500\u2500 Blockquote editor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-editor-blockquote {
+  border-left: 3px solid var(--border-focus);
+  padding: 0.5em 1em;
+  color: var(--text-muted);
+  background: var(--bg-elevated);
+  border-radius: 0 var(--radius) var(--radius) 0;
+}
+
+/* \u2500\u2500 List editor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-editor-list { line-height: 1.8; }
+
+/* \u2500\u2500 Inline syntax markers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+/* Hidden by default \u2014 opacity:0 keeps them in textContent/innerText */
+.md-syn {
+  opacity: 0;
+  color: var(--text-faint);
+  font-weight: inherit;
+  font-style: inherit;
+  font-size: inherit;
+  font-family: inherit;
+  user-select: text;
+}
+
+/* Reveal markers when cursor is inside the formatted element */
+strong.cursor-here > .md-syn,
+em.cursor-here > .md-syn,
+code.cursor-here > .md-syn,
+s.cursor-here > .md-syn,
+a.cursor-here > .md-syn { opacity: 0.45; }
+
+/* Heading # markers: faint always, slightly brighter on focus */
+.md-heading-marker { opacity: 0.18; transition: opacity 0.08s; }
+.valt-block-editor:focus .md-heading-marker { opacity: 0.4; }
+
+/* Blockquote > markers */
+.md-blockquote-marker { opacity: 0.25; }
+.valt-block-editor:focus .md-blockquote-marker { opacity: 0.45; }
+
+/* List - / 1. markers: always visible, muted */
+.md-list-marker { color: var(--text-faint); user-select: text; }
+
+/* \u2500\u2500 Inline formatting inside contenteditable \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-block-editor strong { font-weight: 600; color: #f0f0f0; }
+.valt-block-editor em     { font-style: italic; color: #c8c8c8; }
+.valt-block-editor s      { text-decoration: line-through; color: var(--text-muted); }
+.valt-block-editor code   {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--bg-inline);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1em 0.35em;
+  color: #d9a0a0;
+}
+
+/* \u2500\u2500 Static (non-editable) blocks \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-block-static { cursor: default; }
 
 /* \u2500\u2500 Autocomplete dropdown \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 
@@ -54727,8 +54892,9 @@ pre.stub-render {
     const scrollTop = documentEl.scrollTop;
     welcomeEl.style.display = "none";
     documentEl.style.display = "block";
-    const { html: html2, blockMap } = renderDocument(rawMarkdown, filePath, webviewBaseUri, fileList);
-    documentEl.innerHTML = html2;
+    const { fragment, blockMap } = buildDocumentDOM(rawMarkdown, filePath, webviewBaseUri, fileList);
+    documentEl.innerHTML = "";
+    documentEl.appendChild(fragment);
     documentEl.scrollTop = scrollTop;
     initEditor(documentEl, blockMap, {
       filePath,

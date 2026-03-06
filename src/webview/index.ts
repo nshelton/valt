@@ -2,7 +2,7 @@
  * Webview entry point.
  * Bootstraps the message bus, injects the stylesheet, and wires up the UI.
  */
-import { renderDocument } from "./renderer";
+import { buildDocumentDOM } from "./renderer";
 import { initEditor } from "./editor";
 import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
 import styles from "./style.css";
@@ -69,8 +69,9 @@ function showDocument(
   welcomeEl.style.display  = "none";
   documentEl.style.display = "block";
 
-  const { html, blockMap } = renderDocument(rawMarkdown, filePath, webviewBaseUri, fileList);
-  documentEl.innerHTML = html;
+  const { fragment, blockMap } = buildDocumentDOM(rawMarkdown, filePath, webviewBaseUri, fileList);
+  documentEl.innerHTML = "";
+  documentEl.appendChild(fragment);
 
   // Restore scroll position (important when a block write-back triggers re-render).
   documentEl.scrollTop = scrollTop;
