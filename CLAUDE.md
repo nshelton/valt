@@ -47,10 +47,34 @@ User clicks tree item → valt.openFile → sendFileToWebview()
 All blocks are contenteditable at all times (no click-to-activate).
 User types → input event → autocomplete check
 User blurs → finalizeEdit()
+    if editable.dataset.valtFinalized is set → skip (Enter already pre-saved)
+    if !editable.isConnected → skip (stale element after re-render — prevents silent deletion)
     innerText.trimEnd() + original trailing whitespace → newRaw
     if changed: postMessage(UpdateBlockMessage { filePath, start, end, newRaw })
     → extension splices file, writes disk, posts fileChanged
     → showDocument() re-renders (scroll position preserved)
+    → initEditor() restores focus via pendingFocusAfterOffset or spawns ephemeral via pendingEphemeralAtOffset
+```
+
+## Data flow — Enter key
+
+```
+User presses Enter in any block → handleEnterKey()
+    marks editable.dataset.valtFinalized = "1"  (prevents blur double-post)
+    computes newRaw from current DOM text
+    if content changed:
+        sets pendingEphemeralAtOffset = newBlockEnd
+        postMessage(UpdateBlockMessage)
+        → re-render → initEditor() → spawnEphemeralBlockAtOffset()
+    if content unchanged:
+        spawnEphemeralBlock() immediately (no re-render needed)
+
+Ephemeral block = DOM-only contenteditable div (no data-block-id).
+    On blur (empty)  → remove from DOM, no save
+    On blur (has text) → postMessage(UpdateBlockMessage { start: offset, end: offset, newRaw })
+                         zero-length splice = pure insert; sets pendingFocusAfterOffset
+    On Enter         → same as blur but sets pendingEphemeralAtOffset for chained new blocks
+    On Escape        → remove from DOM
 ```
 
 ## Key data structures
@@ -102,3 +126,4 @@ npm run watch   # esbuild --watch
 - Image paste handler
 - Quick switcher (`valt.quickOpen`)
 - Table editing
+- List items as individual blocks (each `- item` its own BlockInfo)

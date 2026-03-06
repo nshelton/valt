@@ -53960,7 +53960,7 @@ ${content}</tr>
   }
 
   // src/webview/inlineParser.ts
-  var INLINE_RE = /\*\*([\s\S]*?)\*\*|\*((?!\*)[^*\n]*?)\*|`([^`\n]+)`|~~([\s\S]*?)~~|\[([^\]]*)\]\(([^)]+)\)/g;
+  var INLINE_RE = /\*\*([\s\S]*?)\*\*|\*((?!\*)[^*\n]*?)\*|`([^`\n]+)`|~~([\s\S]*?)~~|\[([^\]]*)\]\(([^)]+)\)|@(datetime|status|tag)\(([^)]*)\)/g;
   function syn(marker) {
     const s = document.createElement("span");
     s.className = "md-syn";
@@ -53984,6 +53984,23 @@ ${content}</tr>
     a.appendChild(syn(`](${href})`));
     return a;
   }
+  function decoratorEl(type, value, raw) {
+    const span = document.createElement("span");
+    span.textContent = raw;
+    if (type === "datetime") {
+      span.className = "valt-datetime";
+      const date = /* @__PURE__ */ new Date(value.trim() + "T00:00:00");
+      if (!isNaN(date.getTime())) {
+        span.title = date.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+      }
+    } else if (type === "status") {
+      span.className = "valt-status";
+      span.dataset.status = value.trim().toLowerCase();
+    } else {
+      span.className = "valt-tag";
+    }
+    return span;
+  }
   function renderInlineNodes(text) {
     const nodes = [];
     const re = new RegExp(INLINE_RE.source, "g");
@@ -54002,6 +54019,8 @@ ${content}</tr>
         nodes.push(wrapEl("s", "~~", "~~", m[4]));
       else if (m[5] !== void 0)
         nodes.push(linkEl(m[5], m[6]));
+      else if (m[7] !== void 0)
+        nodes.push(decoratorEl(m[7], m[8], m[0]));
       last = re.lastIndex;
     }
     if (last < text.length)
@@ -54055,6 +54074,11 @@ ${content}</tr>
     wrapper.dataset.blockId = String(block2.id);
     if (block2.isSpace)
       return wrapper;
+    const handle = document.createElement("div");
+    handle.className = "valt-block-handle";
+    handle.draggable = true;
+    handle.textContent = "\u283F";
+    wrapper.appendChild(handle);
     switch (block2.tokenType) {
       case "heading":
         wrapper.appendChild(buildHeading(block2));
@@ -54081,6 +54105,7 @@ ${content}</tr>
     const div = document.createElement("div");
     div.contentEditable = "true";
     div.spellcheck = false;
+    div.draggable = false;
     div.className = ["valt-block-editor", extraClass].filter(Boolean).join(" ");
     return div;
   }
@@ -54159,12 +54184,21 @@ ${content}</tr>
 
   // src/webview/editor.ts
   var autocomplete = null;
+  var contextMenu = null;
+  var currentDrag = null;
+  var selectionTrackingSetup = false;
+  var pendingFocusAfterOffset = null;
+  var pendingEphemeralAtOffset = null;
+  var currentBlockMap = null;
+  var currentContainer = null;
   var DECORATOR_ITEMS = [
     { label: "datetime(...)", insert: "datetime(", kind: "decorator" },
     { label: "tag(...)", insert: "tag(", kind: "decorator" },
     { label: "status(...)", insert: "status(", kind: "decorator" }
   ];
   function initEditor(container, blockMap, ctx) {
+    currentContainer = container;
+    currentBlockMap = blockMap;
     setupSelectionTracking();
     container.querySelectorAll(".valt-block").forEach((blockEl) => {
       const id = parseInt(blockEl.dataset.blockId ?? "-1");
@@ -54175,13 +54209,27 @@ ${content}</tr>
       if (!editable)
         return;
       editable.addEventListener("input", () => handleAutocompleteInput(editable, ctx.fileList));
-      editable.addEventListener("keydown", (e) => handleKeydown(e, editable, block2));
+      editable.addEventListener("keydown", (e) => handleKeydown(e, editable, block2, ctx));
       editable.addEventListener("blur", () => {
         setTimeout(() => finalizeEdit(editable, block2, ctx), 160);
       });
+      setupBlockHandle(blockEl, block2, ctx);
     });
+    if (pendingFocusAfterOffset !== null) {
+      const offset = pendingFocusAfterOffset;
+      pendingFocusAfterOffset = null;
+      focusBlockNearOffset(offset, container, blockMap);
+    }
+    if (pendingEphemeralAtOffset !== null) {
+      const offset = pendingEphemeralAtOffset;
+      pendingEphemeralAtOffset = null;
+      spawnEphemeralBlockAtOffset(offset, container, blockMap, ctx);
+    }
   }
   function setupSelectionTracking() {
+    if (selectionTrackingSetup)
+      return;
+    selectionTrackingSetup = true;
     document.addEventListener("selectionchange", () => {
       document.querySelectorAll(".cursor-here").forEach((el2) => {
         el2.classList.remove("cursor-here");
@@ -54194,18 +54242,53 @@ ${content}</tr>
       el?.closest("strong, em, code, s, a")?.classList.add("cursor-here");
     });
   }
+  function focusBlockNearOffset(offset, container, blockMap) {
+    let target = null;
+    for (const [, block2] of blockMap) {
+      if (!block2.isSpace && block2.start >= offset) {
+        if (!target || block2.start < target.start)
+          target = block2;
+      }
+    }
+    if (!target)
+      return;
+    const el = container.querySelector(
+      `[data-block-id="${target.id}"] [contenteditable]`
+    );
+    if (!el)
+      return;
+    el.focus();
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    range.collapse(true);
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+  }
   function getBlockText(el) {
     return el.innerText.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   }
   function finalizeEdit(editable, block2, ctx) {
+    if (!editable.isConnected)
+      return;
+    if (editable.dataset.valtFinalized) {
+      delete editable.dataset.valtFinalized;
+      return;
+    }
     dismissAutocomplete();
     const trailingWs = block2.raw.match(/\n+$/)?.[0] ?? "\n";
     const newRaw = getBlockText(editable).trimEnd() + trailingWs;
     if (newRaw !== block2.raw) {
       ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block2.start, end: block2.end, newRaw });
+    } else if (pendingFocusAfterOffset !== null) {
+      const offset = pendingFocusAfterOffset;
+      pendingFocusAfterOffset = null;
+      if (currentContainer && currentBlockMap) {
+        focusBlockNearOffset(offset, currentContainer, currentBlockMap);
+      }
     }
   }
-  function handleKeydown(e, editable, block2) {
+  function handleKeydown(e, editable, block2, ctx) {
     if (autocomplete) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -54227,10 +54310,152 @@ ${content}</tr>
         return;
       }
     }
-    if (e.key === "Enter" && block2.tokenType === "heading") {
+    if (e.key === "Enter") {
       e.preventDefault();
-      editable.blur();
+      if (block2.tokenType === "list") {
+        handleListEnter(editable);
+      } else {
+        handleEnterKey(editable, block2, ctx);
+      }
     }
+  }
+  function handleListEnter(editable) {
+    const before = getTextBeforeCaret(editable);
+    const currentLine = before.split("\n").pop() ?? "";
+    const markerMatch = currentLine.match(/^(\s*)([-*+]|\d+\.)(\s+)/);
+    if (!markerMatch) {
+      insertTextAtCaret("\n");
+      return;
+    }
+    const [, indent, marker, space] = markerMatch;
+    let nextMarker;
+    if (/^\d+$/.test(marker)) {
+      nextMarker = `${indent}${parseInt(marker, 10) + 1}.${space}`;
+    } else {
+      nextMarker = `${indent}${marker}${space}`;
+    }
+    insertTextAtCaret("\n" + nextMarker);
+  }
+  function insertTextAtCaret(text) {
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0)
+      return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const node = document.createTextNode(text);
+    range.insertNode(node);
+    range.setStartAfter(node);
+    range.setEndAfter(node);
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  function handleEnterKey(editable, block2, ctx) {
+    editable.dataset.valtFinalized = "1";
+    const trailingWs = block2.raw.match(/\n+$/)?.[0] ?? "\n";
+    const newRaw = getBlockText(editable).trimEnd() + trailingWs;
+    const newBlockEnd = block2.start + newRaw.length;
+    if (newRaw !== block2.raw) {
+      pendingEphemeralAtOffset = newBlockEnd;
+      ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block2.start, end: block2.end, newRaw });
+    } else {
+      const refEl = editable.closest(".valt-block");
+      if (refEl)
+        spawnEphemeralBlock(refEl, newBlockEnd, ctx);
+    }
+    editable.blur();
+  }
+  function spawnEphemeralBlockAtOffset(insertAfterOffset, container, blockMap, ctx) {
+    let refBlock = null;
+    for (const [, block2] of blockMap) {
+      if (!block2.isSpace && block2.end <= insertAfterOffset) {
+        if (!refBlock || block2.end > refBlock.end)
+          refBlock = block2;
+      }
+    }
+    if (!refBlock)
+      return;
+    const refEl = container.querySelector(`[data-block-id="${refBlock.id}"]`);
+    if (refEl)
+      spawnEphemeralBlock(refEl, insertAfterOffset, ctx);
+  }
+  function spawnEphemeralBlock(afterEl, insertAtOffset, ctx) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "valt-block";
+    const editable = document.createElement("div");
+    editable.contentEditable = "true";
+    editable.spellcheck = false;
+    editable.className = "valt-block-editor";
+    wrapper.appendChild(editable);
+    afterEl.insertAdjacentElement("afterend", wrapper);
+    editable.focus();
+    editable.addEventListener("input", () => handleAutocompleteInput(editable, ctx.fileList));
+    editable.addEventListener("keydown", (e) => {
+      if (autocomplete) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          shiftActive(1);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          shiftActive(-1);
+          return;
+        }
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          commitAutocomplete(editable);
+          return;
+        }
+        if (e.key === "Escape") {
+          dismissAutocomplete();
+          return;
+        }
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEphemeral(
+          editable,
+          wrapper,
+          insertAtOffset,
+          ctx,
+          /* spawnNext */
+          true
+        );
+      }
+      if (e.key === "Escape") {
+        dismissAutocomplete();
+        wrapper.remove();
+      }
+    });
+    editable.addEventListener("blur", () => {
+      setTimeout(() => commitEphemeral(
+        editable,
+        wrapper,
+        insertAtOffset,
+        ctx,
+        /* spawnNext */
+        false
+      ), 160);
+    });
+  }
+  function commitEphemeral(editable, wrapper, insertAtOffset, ctx, spawnNext) {
+    if (!editable.isConnected)
+      return;
+    dismissAutocomplete();
+    const text = getBlockText(editable).trimEnd();
+    if (!text) {
+      wrapper.remove();
+      return;
+    }
+    const isSetextUnderline = /^[ \t]*[-=]+[ \t]*$/.test(text);
+    const newRaw = (isSetextUnderline ? "\n\n" : "\n") + text + "\n\n";
+    const newParagraphEnd = insertAtOffset + text.length + 2;
+    if (spawnNext) {
+      pendingEphemeralAtOffset = newParagraphEnd;
+    } else {
+      pendingFocusAfterOffset = insertAtOffset;
+    }
+    ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: insertAtOffset, end: insertAtOffset, newRaw });
   }
   function handleAutocompleteInput(editable, fileList) {
     const query = getAtQuery(editable);
@@ -54346,13 +54571,101 @@ ${content}</tr>
       return;
     for (let i = 0; i < match[0].length; i++)
       sel.modify("extend", "backward", "character");
-    document.execCommand("insertText", false, "@" + item.insert);
+    insertTextAtCaret("@" + item.insert);
     dismissAutocomplete();
     editable.dispatchEvent(new Event("input"));
   }
   function dismissAutocomplete() {
     autocomplete?.dropdown.remove();
     autocomplete = null;
+  }
+  function setupBlockHandle(blockEl, block2, ctx) {
+    const handle = blockEl.querySelector(".valt-block-handle");
+    if (!handle)
+      return;
+    handle.addEventListener("dragstart", (e) => {
+      currentDrag = { blockId: block2.id, block: block2, blockEl };
+      e.dataTransfer?.setData("text/plain", String(block2.id));
+      blockEl.style.opacity = "0.4";
+    });
+    handle.addEventListener("dragend", () => {
+      if (currentDrag)
+        blockEl.style.opacity = "";
+      currentDrag = null;
+      document.querySelectorAll(".drag-over-above, .drag-over-below").forEach((el) => {
+        el.classList.remove("drag-over-above", "drag-over-below");
+      });
+    });
+    handle.addEventListener("contextmenu", (e) => showBlockContextMenu(e, block2, ctx));
+    blockEl.addEventListener("dragover", (e) => {
+      if (!currentDrag || currentDrag.blockId === block2.id)
+        return;
+      e.preventDefault();
+      e.dataTransfer && (e.dataTransfer.dropEffect = "move");
+      const rect = blockEl.getBoundingClientRect();
+      const above = e.clientY < rect.top + rect.height / 2;
+      blockEl.classList.toggle("drag-over-above", above);
+      blockEl.classList.toggle("drag-over-below", !above);
+    });
+    blockEl.addEventListener("dragleave", () => {
+      blockEl.classList.remove("drag-over-above", "drag-over-below");
+    });
+    blockEl.addEventListener("drop", (e) => handleBlockDrop(e, blockEl, block2, ctx));
+  }
+  function handleBlockDrop(e, targetEl, targetBlock, ctx) {
+    e.preventDefault();
+    targetEl.classList.remove("drag-over-above", "drag-over-below");
+    if (!currentDrag || currentDrag.blockId === targetBlock.id)
+      return;
+    const { block: movingBlock, blockEl } = currentDrag;
+    blockEl.style.opacity = "";
+    currentDrag = null;
+    const rect = targetEl.getBoundingClientRect();
+    const above = e.clientY < rect.top + rect.height / 2;
+    const insertAfterOffset = above ? targetBlock.start : targetBlock.end;
+    ctx.postMessage({
+      type: "moveBlock",
+      filePath: ctx.filePath,
+      movingStart: movingBlock.start,
+      movingEnd: movingBlock.end,
+      insertAfterOffset
+    });
+  }
+  function showBlockContextMenu(e, block2, ctx) {
+    e.preventDefault();
+    dismissContextMenu();
+    const menu = document.createElement("div");
+    menu.className = "valt-context-menu";
+    const debug = document.createElement("div");
+    debug.className = "valt-context-menu-debug";
+    const depthLine = block2.depth != null ? `
+depth:  ${block2.depth}` : "";
+    debug.textContent = `id:     ${block2.id}
+type:   ${block2.tokenType}
+start:  ${block2.start}
+end:    ${block2.end}${depthLine}`;
+    menu.appendChild(debug);
+    const sep = document.createElement("hr");
+    sep.className = "valt-context-menu-sep";
+    menu.appendChild(sep);
+    const del = document.createElement("div");
+    del.className = "valt-context-menu-item danger";
+    del.textContent = "Delete block";
+    del.addEventListener("mousedown", (ev) => {
+      ev.preventDefault();
+      dismissContextMenu();
+      ctx.postMessage({ type: "deleteBlock", filePath: ctx.filePath, start: block2.start, end: block2.end });
+    });
+    menu.appendChild(del);
+    menu.style.top = `${e.clientY}px`;
+    menu.style.left = `${Math.min(e.clientX, window.innerWidth - 220)}px`;
+    document.body.appendChild(menu);
+    contextMenu = menu;
+    setTimeout(() => document.addEventListener("mousedown", dismissContextMenu, { once: true }), 0);
+  }
+  function dismissContextMenu() {
+    contextMenu?.remove();
+    contextMenu = null;
   }
   function baseName2(filePath) {
     const name = filePath.replace(/\\/g, "/").split("/").pop() ?? filePath;
@@ -54628,7 +54941,6 @@ html, body {
   cursor: default;
 }
 
-.valt-tag::before { content: "#"; opacity: 0.6; margin-right: 1px; }
 
 .valt-status {
   display: inline-flex;
@@ -54712,6 +55024,23 @@ pre.stub-render {
   position: relative;
 }
 
+.valt-block::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: transparent;
+  border-radius: 1px;
+  transition: background 0.15s;
+  pointer-events: none;
+}
+
+.valt-block:hover::before {
+  background: var(--border-focus);
+}
+
 .valt-block:hover {
   background: rgba(255, 255, 255, 0.025);
 }
@@ -54719,6 +55048,86 @@ pre.stub-render {
 .valt-block + .valt-block {
   margin-top: 0.75em;
 }
+
+/* \u2500\u2500 Drag-over indicators \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-block.drag-over-above::after,
+.valt-block.drag-over-below::after {
+  content: '';
+  position: absolute;
+  left: -6px;
+  right: -6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.valt-block.drag-over-above::after { top: -3px; }
+.valt-block.drag-over-below::after { bottom: -3px; }
+
+/* \u2500\u2500 Block drag handle \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-block-handle {
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  opacity: 0;
+  color: var(--text-faint);
+  font-size: 13px;
+  transition: opacity 0.15s;
+  user-select: none;
+}
+
+.valt-block:hover .valt-block-handle { opacity: 1; }
+.valt-block-handle:active { cursor: grabbing; }
+
+/* \u2500\u2500 Block context menu \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
+
+.valt-context-menu {
+  position: fixed;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  z-index: 20000;
+  min-width: 200px;
+  padding: 4px 0;
+}
+
+.valt-context-menu-debug {
+  padding: 6px 14px;
+  font-size: 0.72em;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.valt-context-menu-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.valt-context-menu-item {
+  padding: 6px 14px;
+  font-size: 0.875em;
+  cursor: pointer;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.valt-context-menu-item:hover { background: rgba(111, 163, 216, 0.12); color: var(--text); }
+.valt-context-menu-item.danger { color: var(--red); }
+.valt-context-menu-item.danger:hover { background: rgba(212, 106, 106, 0.12); }
 
 /* \u2500\u2500 Contenteditable block editor \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 */
 

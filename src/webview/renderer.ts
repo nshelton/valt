@@ -153,6 +153,12 @@ export function buildBlockElement(
   wrapper.dataset.blockId = String(block.id);
   if (block.isSpace) return wrapper;
 
+  const handle = document.createElement("div");
+  handle.className = "valt-block-handle";
+  handle.draggable = true;
+  handle.textContent = "⠿";
+  wrapper.appendChild(handle);
+
   switch (block.tokenType) {
     case "heading":    wrapper.appendChild(buildHeading(block));    break;
     case "paragraph":  wrapper.appendChild(buildParagraph(block));  break;
@@ -170,6 +176,7 @@ function makeEditable(extraClass?: string): HTMLElement {
   const div = document.createElement("div");
   div.contentEditable = "true";
   div.spellcheck = false;
+  div.draggable = false;
   div.className = ["valt-block-editor", extraClass].filter(Boolean).join(" ");
   return div;
 }

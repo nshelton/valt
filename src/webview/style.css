@@ -266,7 +266,6 @@ html, body {
   cursor: default;
 }
 
-.valt-tag::before { content: "#"; opacity: 0.6; margin-right: 1px; }
 
 .valt-status {
   display: inline-flex;
@@ -350,6 +349,23 @@ pre.stub-render {
   position: relative;
 }
 
+.valt-block::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 4px;
+  bottom: 4px;
+  width: 2px;
+  background: transparent;
+  border-radius: 1px;
+  transition: background 0.15s;
+  pointer-events: none;
+}
+
+.valt-block:hover::before {
+  background: var(--border-focus);
+}
+
 .valt-block:hover {
   background: rgba(255, 255, 255, 0.025);
 }
@@ -357,6 +373,86 @@ pre.stub-render {
 .valt-block + .valt-block {
   margin-top: 0.75em;
 }
+
+/* ── Drag-over indicators ─────────────────────────────────────────────────── */
+
+.valt-block.drag-over-above::after,
+.valt-block.drag-over-below::after {
+  content: '';
+  position: absolute;
+  left: -6px;
+  right: -6px;
+  height: 2px;
+  background: var(--accent);
+  border-radius: 1px;
+  pointer-events: none;
+}
+
+.valt-block.drag-over-above::after { top: -3px; }
+.valt-block.drag-over-below::after { bottom: -3px; }
+
+/* ── Block drag handle ────────────────────────────────────────────────────── */
+
+.valt-block-handle {
+  position: absolute;
+  left: -20px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 16px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: grab;
+  opacity: 0;
+  color: var(--text-faint);
+  font-size: 13px;
+  transition: opacity 0.15s;
+  user-select: none;
+}
+
+.valt-block:hover .valt-block-handle { opacity: 1; }
+.valt-block-handle:active { cursor: grabbing; }
+
+/* ── Block context menu ───────────────────────────────────────────────────── */
+
+.valt-context-menu {
+  position: fixed;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focus);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
+  z-index: 20000;
+  min-width: 200px;
+  padding: 4px 0;
+}
+
+.valt-context-menu-debug {
+  padding: 6px 14px;
+  font-size: 0.72em;
+  font-family: var(--font-mono);
+  color: var(--text-faint);
+  line-height: 1.6;
+  white-space: pre;
+}
+
+.valt-context-menu-sep {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 4px 0;
+}
+
+.valt-context-menu-item {
+  padding: 6px 14px;
+  font-size: 0.875em;
+  cursor: pointer;
+  color: var(--text-muted);
+  user-select: none;
+}
+
+.valt-context-menu-item:hover { background: rgba(111, 163, 216, 0.12); color: var(--text); }
+.valt-context-menu-item.danger { color: var(--red); }
+.valt-context-menu-item.danger:hover { background: rgba(212, 106, 106, 0.12); }
 
 /* ── Contenteditable block editor ────────────────────────────────────────── */
 

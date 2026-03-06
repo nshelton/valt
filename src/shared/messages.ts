@@ -63,8 +63,26 @@ export interface UpdateBlockMessage {
   newRaw: string;
 }
 
+export interface DeleteBlockMessage {
+  type: "deleteBlock";
+  filePath: string;
+  start: number;
+  end: number;
+}
+
+export interface MoveBlockMessage {
+  type: "moveBlock";
+  filePath: string;
+  movingStart: number;
+  movingEnd: number;
+  /** The moving block's raw will be inserted at this offset (before any adjustment for removal) */
+  insertAfterOffset: number;
+}
+
 export type WebviewMessage =
   | RequestFileMessage
   | SaveImageMessage
   | ReadyMessage
-  | UpdateBlockMessage;
+  | UpdateBlockMessage
+  | DeleteBlockMessage
+  | MoveBlockMessage;

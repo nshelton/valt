@@ -128,6 +128,12 @@ function handleWebviewMessage(
     case "updateBlock":
       handleUpdateBlock(message.filePath, message.start, message.end, message.newRaw);
       break;
+    case "deleteBlock":
+      handleDeleteBlock(message.filePath, message.start, message.end);
+      break;
+    case "moveBlock":
+      handleMoveBlock(message.filePath, message.movingStart, message.movingEnd, message.insertAfterOffset);
+      break;
   }
 }
 
@@ -176,6 +182,50 @@ function handleUpdateBlock(
     sendFileToWebview(filePath);
   } catch {
     vscode.window.showErrorMessage("Valt: Could not update block.");
+  }
+}
+
+function handleDeleteBlock(filePath: string, start: number, end: number): void {
+  if (!panel) return;
+  try {
+    const original = fs.readFileSync(filePath, "utf8");
+    const updated = original.slice(0, start) + original.slice(end);
+    fs.writeFileSync(filePath, updated, "utf8");
+    treeProvider?.refresh();
+    sendFileToWebview(filePath);
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not delete block.");
+  }
+}
+
+function handleMoveBlock(filePath: string, movingStart: number, movingEnd: number, insertAfterOffset: number): void {
+  if (!panel) return;
+  try {
+    const original = fs.readFileSync(filePath, "utf8");
+    const movingRaw = original.slice(movingStart, movingEnd);
+    let updated: string;
+    if (insertAfterOffset <= movingStart) {
+      // Moving up: insertAfterOffset is a block's .start, so content before it already ends
+      // with "\n\n" (or is empty). We only need "\n" after movingRaw to create the blank line
+      // that separates it from the block now following it.
+      updated = original.slice(0, insertAfterOffset)
+              + movingRaw + "\n"
+              + original.slice(insertAfterOffset, movingStart)
+              + original.slice(movingEnd);
+    } else {
+      // Moving down: insertAfterOffset is a block's .end, so content before it ends with only
+      // one "\n". We need "\n" before AND after movingRaw to create proper blank-line boundaries.
+      const without = original.slice(0, movingStart) + original.slice(movingEnd);
+      const adjustedOffset = insertAfterOffset - (movingEnd - movingStart);
+      updated = without.slice(0, adjustedOffset)
+              + "\n" + movingRaw + "\n"
+              + without.slice(adjustedOffset);
+    }
+    fs.writeFileSync(filePath, updated, "utf8");
+    treeProvider?.refresh();
+    sendFileToWebview(filePath);
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not move block.");
   }
 }
 

@@ -236,6 +236,12 @@ function handleWebviewMessage(message, context) {
     case "updateBlock":
       handleUpdateBlock(message.filePath, message.start, message.end, message.newRaw);
       break;
+    case "deleteBlock":
+      handleDeleteBlock(message.filePath, message.start, message.end);
+      break;
+    case "moveBlock":
+      handleMoveBlock(message.filePath, message.movingStart, message.movingEnd, message.insertAfterOffset);
+      break;
   }
 }
 function sendFileToWebview(filePath) {
@@ -273,6 +279,40 @@ function handleUpdateBlock(filePath, start, end, newRaw) {
     sendFileToWebview(filePath);
   } catch {
     vscode2.window.showErrorMessage("Valt: Could not update block.");
+  }
+}
+function handleDeleteBlock(filePath, start, end) {
+  if (!panel)
+    return;
+  try {
+    const original = fs2.readFileSync(filePath, "utf8");
+    const updated = original.slice(0, start) + original.slice(end);
+    fs2.writeFileSync(filePath, updated, "utf8");
+    treeProvider?.refresh();
+    sendFileToWebview(filePath);
+  } catch {
+    vscode2.window.showErrorMessage("Valt: Could not delete block.");
+  }
+}
+function handleMoveBlock(filePath, movingStart, movingEnd, insertAfterOffset) {
+  if (!panel)
+    return;
+  try {
+    const original = fs2.readFileSync(filePath, "utf8");
+    const movingRaw = original.slice(movingStart, movingEnd);
+    let updated;
+    if (insertAfterOffset <= movingStart) {
+      updated = original.slice(0, insertAfterOffset) + movingRaw + "\n" + original.slice(insertAfterOffset, movingStart) + original.slice(movingEnd);
+    } else {
+      const without = original.slice(0, movingStart) + original.slice(movingEnd);
+      const adjustedOffset = insertAfterOffset - (movingEnd - movingStart);
+      updated = without.slice(0, adjustedOffset) + "\n" + movingRaw + "\n" + without.slice(adjustedOffset);
+    }
+    fs2.writeFileSync(filePath, updated, "utf8");
+    treeProvider?.refresh();
+    sendFileToWebview(filePath);
+  } catch {
+    vscode2.window.showErrorMessage("Valt: Could not move block.");
   }
 }
 function handleSaveImage(dataBase64, currentFilePath, _context) {
