@@ -172,6 +172,53 @@ function finalizeEdit(editable: HTMLElement, block: BlockInfo, ctx: EditorContex
   }
 }
 
+// ── Block navigation ──────────────────────────────────────────────────────────
+
+function isCaretOnFirstLine(el: HTMLElement): boolean {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return false;
+  const caret = sel.getRangeAt(0).getBoundingClientRect();
+  if (caret.height === 0) return true; // empty block
+  return caret.top < el.getBoundingClientRect().top + caret.height * 1.5;
+}
+
+function isCaretOnLastLine(el: HTMLElement): boolean {
+  const sel = window.getSelection();
+  if (!sel || sel.rangeCount === 0) return false;
+  const caret = sel.getRangeAt(0).getBoundingClientRect();
+  if (caret.height === 0) return true; // empty block
+  return caret.bottom > el.getBoundingClientRect().bottom - caret.height * 1.5;
+}
+
+function navigateToAdjacentBlock(
+  dir: "up" | "down",
+  block: BlockInfo,
+  container: HTMLElement,
+  blockMap: Map<number, BlockInfo>
+): void {
+  const sorted = Array.from(blockMap.values())
+    .filter((b) => !b.isSpace)
+    .sort((a, b) => a.start - b.start);
+  const idx = sorted.findIndex((b) => b.id === block.id);
+  const target = dir === "down" ? sorted[idx + 1] : sorted[idx - 1];
+  if (!target) return;
+  const targetEditable = container.querySelector<HTMLElement>(
+    `[data-block-id="${target.id}"] [contenteditable]`
+  );
+  if (!targetEditable) return;
+  targetEditable.focus();
+  const range = document.createRange();
+  if (dir === "down") {
+    range.setStart(targetEditable, 0);
+    range.collapse(true);
+  } else {
+    range.selectNodeContents(targetEditable);
+    range.collapse(false);
+  }
+  window.getSelection()?.removeAllRanges();
+  window.getSelection()?.addRange(range);
+}
+
 // ── Keyboard handling ─────────────────────────────────────────────────────────
 
 function handleKeydown(e: KeyboardEvent, editable: HTMLElement, block: BlockInfo, ctx: EditorContext): void {
@@ -181,8 +228,20 @@ function handleKeydown(e: KeyboardEvent, editable: HTMLElement, block: BlockInfo
     if (e.key === "Enter" || e.key === "Tab") { e.preventDefault(); commitAutocomplete(editable); return; }
     if (e.key === "Escape")    { dismissAutocomplete(); return; }
   }
-  // Enter always finalises the current block and spawns a new empty block below,
-  // except inside a list where it adds the next list item inline.
+  if (e.key === "ArrowDown" && !e.shiftKey && !e.altKey && currentContainer && currentBlockMap) {
+    if (isCaretOnLastLine(editable)) {
+      e.preventDefault();
+      navigateToAdjacentBlock("down", block, currentContainer, currentBlockMap);
+      return;
+    }
+  }
+  if (e.key === "ArrowUp" && !e.shiftKey && !e.altKey && currentContainer && currentBlockMap) {
+    if (isCaretOnFirstLine(editable)) {
+      e.preventDefault();
+      navigateToAdjacentBlock("up", block, currentContainer, currentBlockMap);
+      return;
+    }
+  }
   if (e.key === "Enter") {
     e.preventDefault();
     if (block.tokenType === "list") {
@@ -227,18 +286,34 @@ function insertTextAtCaret(text: string): void {
 }
 
 function handleEnterKey(editable: HTMLElement, block: BlockInfo, ctx: EditorContext): void {
-  // Mark as finalized so the blur timeout won't double-post.
   editable.dataset.valtFinalized = "1";
   const trailingWs = block.raw.match(/\n+$/)?.[0] ?? "\n";
+
+  if (block.tokenType === "paragraph") {
+    const textBefore = getTextBeforeCaret(editable);
+    const fullText = getBlockText(editable);
+    const textAfter = fullText.slice(textBefore.length);
+
+    if (textAfter.trim()) {
+      // Mid-block split: first part stays, second part becomes a new paragraph.
+      const firstPart = textBefore.trimEnd();
+      const secondPart = textAfter.trimStart();
+      const newRaw = firstPart + "\n\n" + secondPart + trailingWs;
+      // Focus the new second block after re-render.
+      pendingFocusAfterOffset = block.start + firstPart.length + 2;
+      ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block.start, end: block.end, newRaw });
+      editable.blur();
+      return;
+    }
+  }
+
+  // Default: save full block content and spawn empty block below.
   const newRaw = getBlockText(editable).trimEnd() + trailingWs;
-  // newBlockEnd accounts for the actual length of what we're writing.
   const newBlockEnd = block.start + newRaw.length;
   if (newRaw !== block.raw) {
-    // Content changed — re-render will happen; spawn ephemeral after it.
     pendingEphemeralAtOffset = newBlockEnd;
     ctx.postMessage({ type: "updateBlock", filePath: ctx.filePath, start: block.start, end: block.end, newRaw });
   } else {
-    // No change — no re-render; spawn ephemeral immediately in the DOM.
     const refEl = editable.closest<HTMLElement>(".valt-block");
     if (refEl) spawnEphemeralBlock(refEl, newBlockEnd, ctx);
   }
