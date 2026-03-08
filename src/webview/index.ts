@@ -14,6 +14,7 @@ import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
 import { emojiCompletionSource } from "./emojiPlugin";
+import { componentMenuCompletionSource } from "./componentMenu";
 import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
 import { DateTimeProvider, PageProvider, TagProvider } from "./decoratorProviders";
 import styles from "./style.css";
@@ -108,7 +109,7 @@ function createEditor(content: string): EditorView {
         (msg) => vscode.postMessage(msg),
         (name) => currentFilePath.substring(0, currentFilePath.lastIndexOf("/") + 1) + name,
       ),
-      autocompletion({ override: [createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+      autocompletion({ override: [componentMenuCompletionSource, createDecoratorCompletionSource(providers), emojiCompletionSource] }),
       updateListener,
       EditorView.lineWrapping,
     ],
