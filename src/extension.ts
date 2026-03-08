@@ -63,7 +63,7 @@ function openValtPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = buildWebviewHtml(panel.webview, context);
 
   panel.webview.onDidReceiveMessage(
-    (raw: unknown) => handleWebviewMessage(raw as WebviewMessage, context),
+    (raw: unknown) => handleWebviewMessage(raw as WebviewMessage),
     undefined,
     context.subscriptions
   );
@@ -91,18 +91,18 @@ function buildWebviewHtml(
     content="default-src 'none';
              img-src ${webview.cspSource} data: blob:;
              script-src 'nonce-${nonce}';
-             style-src ${webview.cspSource} 'unsafe-inline';" />
+             style-src ${webview.cspSource} 'unsafe-inline';
+             font-src ${webview.cspSource};" />
   <title>Valt</title>
 </head>
 <body>
   <div id="app">
-    <div id="sidebar"></div>
     <div id="content">
       <div id="welcome">
         <h1>Valt</h1>
         <p>Select a file from the sidebar to get started.</p>
       </div>
-      <div id="document" style="display:none;"></div>
+      <div id="editor-root" style="display:none;"></div>
     </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
@@ -112,27 +112,15 @@ function buildWebviewHtml(
 
 // ── Message handlers ──────────────────────────────────────────────────────────
 
-function handleWebviewMessage(
-  message: WebviewMessage,
-  context: vscode.ExtensionContext
-): void {
+function handleWebviewMessage(message: WebviewMessage): void {
   switch (message.type) {
     case "ready":
       break;
     case "requestFile":
       sendFileToWebview(message.path);
       break;
-    case "saveImage":
-      handleSaveImage(message.dataBase64, message.currentFilePath, context);
-      break;
-    case "updateBlock":
-      handleUpdateBlock(message.filePath, message.start, message.end, message.newRaw);
-      break;
-    case "deleteBlock":
-      handleDeleteBlock(message.filePath, message.start, message.end);
-      break;
-    case "moveBlock":
-      handleMoveBlock(message.filePath, message.movingStart, message.movingEnd, message.insertAfterOffset);
+    case "saveFile":
+      handleSaveFile(message.filePath, message.content);
       break;
   }
 }
@@ -144,13 +132,11 @@ function sendFileToWebview(filePath: string): void {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
     const webviewBaseUri = panel.webview.asWebviewUri(dirUri).toString();
-    const fileList = collectFileList(getWorkspaceRoot() ?? path.dirname(filePath));
     const msg: ExtensionMessage = {
       type: "openFile",
       path: filePath,
       content,
       webviewBaseUri,
-      fileList,
     };
     panel.webview.postMessage(msg);
   } catch {
@@ -158,133 +144,12 @@ function sendFileToWebview(filePath: string): void {
   }
 }
 
-function handleUpdateBlock(
-  filePath: string,
-  start: number,
-  end: number,
-  newRaw: string
-): void {
-  if (!panel) return;
-
+function handleSaveFile(filePath: string, content: string): void {
   try {
-    const original = fs.readFileSync(filePath, "utf8");
-
-    if (start > original.length || end > original.length) {
-      vscode.window.showErrorMessage("Valt: Block offset is stale — please re-open the file.");
-      return;
-    }
-
-    const updated = original.slice(0, start) + newRaw + original.slice(end);
-    fs.writeFileSync(filePath, updated, "utf8");
+    fs.writeFileSync(filePath, content, "utf8");
     treeProvider?.refresh();
-
-    // Send the freshly written content back so the webview re-renders.
-    sendFileToWebview(filePath);
   } catch {
-    vscode.window.showErrorMessage("Valt: Could not update block.");
-  }
-}
-
-function handleDeleteBlock(filePath: string, start: number, end: number): void {
-  if (!panel) return;
-  try {
-    const original = fs.readFileSync(filePath, "utf8");
-    const updated = original.slice(0, start) + original.slice(end);
-    fs.writeFileSync(filePath, updated, "utf8");
-    treeProvider?.refresh();
-    sendFileToWebview(filePath);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not delete block.");
-  }
-}
-
-function handleMoveBlock(filePath: string, movingStart: number, movingEnd: number, insertAfterOffset: number): void {
-  if (!panel) return;
-  try {
-    const original = fs.readFileSync(filePath, "utf8");
-    const movingRaw = original.slice(movingStart, movingEnd);
-    let updated: string;
-    if (insertAfterOffset <= movingStart) {
-      // Moving up: insertAfterOffset is a block's .start, so content before it already ends
-      // with "\n\n" (or is empty). We only need "\n" after movingRaw to create the blank line
-      // that separates it from the block now following it.
-      updated = original.slice(0, insertAfterOffset)
-              + movingRaw + "\n"
-              + original.slice(insertAfterOffset, movingStart)
-              + original.slice(movingEnd);
-    } else {
-      // Moving down: insertAfterOffset is a block's .end, so content before it ends with only
-      // one "\n". We need "\n" before AND after movingRaw to create proper blank-line boundaries.
-      const without = original.slice(0, movingStart) + original.slice(movingEnd);
-      const adjustedOffset = insertAfterOffset - (movingEnd - movingStart);
-      updated = without.slice(0, adjustedOffset)
-              + "\n" + movingRaw + "\n"
-              + without.slice(adjustedOffset);
-    }
-    fs.writeFileSync(filePath, updated, "utf8");
-    treeProvider?.refresh();
-    sendFileToWebview(filePath);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not move block.");
-  }
-}
-
-function handleSaveImage(
-  dataBase64: string,
-  currentFilePath: string,
-  _context: vscode.ExtensionContext
-): void {
-  if (!panel) return;
-
-  try {
-    const docDir = path.dirname(currentFilePath);
-    const assetsDir = path.join(docDir, "assets");
-
-    if (!fs.existsSync(assetsDir)) {
-      fs.mkdirSync(assetsDir, { recursive: true });
-    }
-
-    const docName = path.basename(currentFilePath, path.extname(currentFilePath));
-    const fileName = `${docName}-${Date.now()}.png`;
-    const absPath = path.join(assetsDir, fileName);
-
-    fs.writeFileSync(absPath, Buffer.from(dataBase64, "base64"));
-
-    const msg: ExtensionMessage = {
-      type: "imageSaved",
-      relativePath: path.join("assets", fileName),
-    };
-    panel.webview.postMessage(msg);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not save image.");
-  }
-}
-
-// ── File list ─────────────────────────────────────────────────────────────────
-
-function collectFileList(rootPath: string): string[] {
-  const results: string[] = [];
-  walkForMarkdown(rootPath, results);
-  return results;
-}
-
-function walkForMarkdown(dir: string, results: string[]): void {
-  let entries: fs.Dirent[];
-
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return;
-  }
-
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walkForMarkdown(fullPath, results);
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      results.push(fullPath);
-    }
+    vscode.window.showErrorMessage("Valt: Could not save file.");
   }
 }
 
