@@ -71,7 +71,7 @@ html, body {
 /* ── CodeMirror container ─────────────────────────────────────────────────── */
 
 #editor-root {
-  max-width: 680px;
+  /* max-width: 680px; */
   margin: 0 auto;
   padding-bottom: 80px;
 }
@@ -238,6 +238,48 @@ html, body {
   background: rgba(111, 163, 216, 0.05);
 }
 
+/* Delete column row (above headers) */
+.cm-col-del-row th {
+  border: none !important;
+  background: none !important;
+  padding: 1px 2px !important;
+  height: 16px;
+  font-weight: normal;
+}
+
+/* Delete row gutter (left of tbody rows) */
+.cm-row-del-cell {
+  width: 16px;
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+}
+
+/* Shared delete button style */
+.cm-table-del-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8em;
+  line-height: 1;
+  color: transparent;
+  transition: color 0.15s, background 0.15s;
+  user-select: none;
+}
+
+.cm-table-wrap:hover .cm-table-del-btn {
+  color: var(--text-faint);
+}
+
+.cm-table-del-btn:hover {
+  color: var(--red) !important;
+  background: rgba(212, 106, 106, 0.12);
+}
+
 /* Add row button (tfoot cell) */
 .cm-table-add-row {
   text-align: center;
@@ -312,10 +354,14 @@ html, body {
   border: 1px solid rgba(106, 191, 105, 0.25);
 }
 
+/* Tag is a mark decoration (inline text), not a replace widget.
+   Styling persists even while the cursor is inside and the user is editing. */
 .cm-decorator-tag {
   color: var(--purple);
   background: rgba(160, 125, 216, 0.12);
   border: 1px solid rgba(160, 125, 216, 0.25);
+  border-radius: 3px;
+  padding: 0 0.35em;
 }
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */

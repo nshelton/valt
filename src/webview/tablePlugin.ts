@@ -87,10 +87,41 @@ function getPendingEdit(wrap: HTMLElement, parsed: ParsedTable): ParsedTable {
 
 // ── Table section builders ────────────────────────────────────────────────────
 
+function makeDelBtn(title: string, onDel: () => void): HTMLElement {
+  const btn = document.createElement("span");
+  btn.className = "cm-table-del-btn";
+  btn.textContent = "×";
+  btn.title = title;
+  btn.addEventListener("mousedown", (e) => { e.preventDefault(); onDel(); });
+  return btn;
+}
+
+function buildColDelRow(parsed: ParsedTable, from: number, to: number, view: EditorView, wrap: HTMLElement): HTMLTableRowElement {
+  const tr = document.createElement("tr");
+  tr.className = "cm-col-del-row";
+  tr.appendChild(document.createElement("th")); // gutter corner
+  parsed.headers.forEach((_, col) => {
+    const th = document.createElement("th");
+    th.appendChild(makeDelBtn("Delete column", () => {
+      const cur = getPendingEdit(wrap, parsed);
+      view.dispatch({ changes: { from, to, insert: reconstructTable({
+        headers: cur.headers.filter((_, i) => i !== col),
+        sepCells: cur.sepCells.filter((_, i) => i !== col),
+        rows: cur.rows.map((r) => r.filter((_, i) => i !== col)),
+        alignments: cur.alignments.filter((_, i) => i !== col),
+      }) } });
+    }));
+    tr.appendChild(th);
+  });
+  return tr;
+}
+
 function buildHead(parsed: ParsedTable, from: number, to: number, view: EditorView, wrap: HTMLElement): HTMLTableSectionElement {
   const { headers, alignments } = parsed;
   const thead = document.createElement("thead");
+  thead.appendChild(buildColDelRow(parsed, from, to, view, wrap));
   const tr = document.createElement("tr");
+  tr.appendChild(document.createElement("th")); // gutter spacer
   headers.forEach((text, col) => {
     const th = makeCell("th", text, alignments[col] ?? "left", -1, col);
     attachCellKeys(th, () => {
@@ -108,6 +139,13 @@ function buildBody(parsed: ParsedTable, from: number, to: number, view: EditorVi
   const tbody = document.createElement("tbody");
   rows.forEach((row, rowIdx) => {
     const tr = document.createElement("tr");
+    const delCell = document.createElement("td");
+    delCell.className = "cm-row-del-cell";
+    delCell.appendChild(makeDelBtn("Delete row", () => {
+      const cur = getPendingEdit(wrap, parsed);
+      view.dispatch({ changes: { from, to, insert: reconstructTable({ ...cur, rows: cur.rows.filter((_, i) => i !== rowIdx) }) } });
+    }));
+    tr.appendChild(delCell);
     row.forEach((text, col) => {
       const td = makeCell("td", text, alignments[col] ?? "left", rowIdx, col);
       attachCellKeys(td, () => {
@@ -125,7 +163,7 @@ function buildFoot(parsed: ParsedTable, from: number, to: number, view: EditorVi
   const tfoot = document.createElement("tfoot");
   const tr = document.createElement("tr");
   const td = document.createElement("td");
-  td.colSpan = parsed.headers.length;
+  td.colSpan = parsed.headers.length + 1; // +1 for gutter column
   td.className = "cm-table-add-row";
   td.textContent = "+";
   td.title = "Add row";

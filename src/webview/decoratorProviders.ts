@@ -98,18 +98,27 @@ export class PageProvider extends DecoratorProvider {
 
   tryMatch(afterAt: string): DecoratorSpec | null {
     if (!afterAt.endsWith(".md")) return null;
+    // Strip path-only portion for display — show just the stem before the uuid/extension
+    const stem = afterAt.replace(/\.md$/, "").replace(/\s+[a-f0-9]{32}$/, "").trim();
     return {
-      displayText: "@" + afterAt,
+      displayText: stem || afterAt,
       cssClass: "cm-decorator-file",
       isReplace: false,
     };
   }
 
   completions(query: string): Completion[] {
-    const q = query.toLowerCase();
+    // query may start with "[" when triggered from the bracket @[ matcher
+    const isBracket = query.startsWith("[");
+    const q = (isBracket ? query.slice(1) : query).toLowerCase();
+
     return [...this.fileSet]
       .filter((f) => f.toLowerCase().includes(q))
-      .map((f): Completion => ({ label: "@" + f, type: "file" }));
+      .map((f): Completion => {
+        // Use bracket syntax if file has spaces or special chars, or if user typed @[
+        const needsBracket = isBracket || /[\s()]/.test(f);
+        return { label: needsBracket ? `@[${f}]` : `@${f}`, type: "file" };
+      });
   }
 }
 
@@ -117,12 +126,11 @@ export class PageProvider extends DecoratorProvider {
 
 export class TagProvider extends DecoratorProvider {
   tryMatch(afterAt: string): DecoratorSpec | null {
-    const m = afterAt.match(/^tag\(([^)]*)\)$/);
-    if (!m) return null;
+    if (!afterAt.startsWith("tag(") || !afterAt.endsWith(")")) return null;
     return {
-      displayText: m[1] || "tag",
-      cssClass: "cm-decorator cm-decorator-tag",
-      isReplace: true,
+      displayText: afterAt, // not used for mark decorations
+      cssClass: "cm-decorator-tag",
+      isReplace: false, // mark: keeps styling even when cursor is inside
     };
   }
 

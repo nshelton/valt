@@ -2,11 +2,12 @@
  * CodeMirror 6 decorator plugin + autocomplete + @now ephemeral replacer.
  *
  * Supported syntax:
- *   @now              → ephemeral: immediately replaced with current timestamp
- *   @yesterday        → date badge (chrono-node parsed)
- *   @"next friday"    → date badge (quoted natural language)
- *   @tag(Label)       → purple pill
- *   @filename.md      → blue wikilink; click opens the file
+ *   @now                    → ephemeral: immediately replaced with current timestamp
+ *   @yesterday              → date badge (chrono-node parsed)
+ *   @"next friday"          → date badge (quoted natural language)
+ *   @tag(Label)             → purple pill
+ *   @simple.md              → blue wikilink (simple filenames)
+ *   @[Name with spaces.md]  → blue wikilink (filenames with spaces/special chars)
  */
 import {
   ViewPlugin, DecorationSet, Decoration, WidgetType, EditorView, ViewUpdate,
@@ -18,9 +19,11 @@ import { formatDate } from "./decoratorProviders";
 import type { WebviewMessage } from "../shared/messages";
 
 // ── Regex ─────────────────────────────────────────────────────────────────────
-// Priority: tag > file > quoted datetime > bare word datetime
+// Priority: tag > bracket-file > simple-file > full-timestamp > quoted datetime > bare word datetime
+// The full-timestamp pattern must come before word so "@2026-03-08 14:32" is
+// captured as one token rather than "@2026-03-08" + orphan " 14:32".
 const DECORATOR_PATTERN =
-  /(?<tag>@tag\((?<tagLabel>[^)]*)\))|(?<file>@(?<fileName>[\w.-]+\.md))|(?<quoted>@"(?<phrase>[^"]*)")|(?<word>@(?<wordText>[\w-]+))/g;
+  /(?<tag>@tag\((?<tagLabel>[^)]*)\))|(?<bracket>@\[(?<bracketFile>[^\]]+)\])|(?<file>@(?<fileName>[\w.-]+\.md))|(?<ts>@(?<tsText>\d{4}-\d{2}-\d{2} \d{2}:\d{2}))|(?<quoted>@"(?<phrase>[^"]*)")|(?<word>@(?<wordText>[\w-]+))/g;
 
 // ── Generic widget ────────────────────────────────────────────────────────────
 
@@ -58,16 +61,15 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
         const mFrom = line.from + match.index;
         const mTo = mFrom + match[0].length;
 
-        // Cursor inside → show raw text for editing
-        if (curFrom <= mTo && curTo >= mFrom) continue;
-
         // Determine what comes after the @
         const g = match.groups ?? {};
         let afterAt: string;
-        if (g.tag)    afterAt = `tag(${g.tagLabel ?? ""})`;
-        else if (g.file)   afterAt = g.fileName ?? "";
-        else if (g.quoted) afterAt = g.phrase ?? "";
-        else if (g.word)   afterAt = g.wordText ?? "";
+        if (g.tag)          afterAt = `tag(${g.tagLabel ?? ""})`;
+        else if (g.bracket) afterAt = g.bracketFile ?? "";
+        else if (g.file)    afterAt = g.fileName ?? "";
+        else if (g.ts)      afterAt = g.tsText ?? "";
+        else if (g.quoted)  afterAt = g.phrase ?? "";
+        else if (g.word)    afterAt = g.wordText ?? "";
         else continue;
 
         // Ask providers in order
@@ -78,11 +80,16 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
         }
         if (!spec) continue;
 
+        const cursorInside = curFrom <= mTo && curTo >= mFrom;
+
         if (spec.isReplace) {
+          // Replace widgets: revert to raw text when cursor is inside for editing
+          if (cursorInside) continue;
           builder.add(mFrom, mTo, Decoration.replace({
             widget: new DecoratorWidget(spec.displayText, spec.cssClass),
           }));
         } else {
+          // Mark decorations: always render — styling persists even while editing
           builder.add(mFrom, mTo, Decoration.mark({ class: spec.cssClass }));
         }
       }
@@ -125,13 +132,15 @@ function createDecoratorPlugin(
           const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
           if (pos == null) return false;
           const line = view.state.doc.lineAt(pos);
-          const fileRe = /@([\w.-]+\.md)/g;
+          // Match both @[filename with spaces.md] and @simple.md
+          const fileRe = /@\[([^\]]+)\]|@([\w.-]+\.md)/g;
           let m: RegExpExecArray | null;
           while ((m = fileRe.exec(line.text)) !== null) {
             const from = line.from + m.index;
             const to = from + m[0].length;
             if (pos >= from && pos <= to) {
-              postMessage({ type: "requestFile", path: resolveFile(m[1]) });
+              const filename = m[1] ?? m[2]; // bracket group or simple group
+              postMessage({ type: "requestFile", path: resolveFile(filename) });
               return true;
             }
           }
@@ -146,6 +155,15 @@ function createDecoratorPlugin(
 
 function createCompletionSource(providers: DecoratorProvider[]) {
   return (context: CompletionContext): CompletionResult | null => {
+    // @[partial... (bracket file syntax — allow spaces inside)
+    const bracketMatch = context.matchBefore(/@\[[^\]]*/);
+    if (bracketMatch) {
+      const query = bracketMatch.text.slice(2); // strip "@["
+      const options = providers.flatMap((p) => p.completions("[" + query));
+      return options.length > 0 ? { from: bracketMatch.from, options } : null;
+    }
+
+    // @word (dates, simple files, tags)
     const match = context.matchBefore(/@\w*/);
     if (!match || (match.from === match.to && !context.explicit)) return null;
     const query = match.text.slice(1); // strip leading @
