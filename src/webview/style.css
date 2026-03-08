@@ -188,6 +188,136 @@ html, body {
 .cm-editor .tok-operator    { color: #89ddff; }
 .cm-editor .tok-propertyName { color: #82aaff; }
 
+/* ── Table widget ─────────────────────────────────────────────────────────── */
+
+.cm-table-wrap {
+  display: flex;
+  align-items: flex-start;
+  margin: 0.5em 0;
+}
+
+.cm-table-scroll {
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.cm-table-widget {
+  border-collapse: collapse;
+  font-size: 0.9em;
+  min-width: 100%;
+}
+
+.cm-table-widget th,
+.cm-table-widget td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.cm-table-widget th {
+  background: var(--bg-elevated);
+  color: var(--text);
+  font-weight: 600;
+}
+
+.cm-table-widget td {
+  color: var(--text);
+}
+
+.cm-table-widget tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Subtle focus — no harsh outline */
+.cm-table-widget th:focus,
+.cm-table-widget td:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(111, 163, 216, 0.35);
+  background: rgba(111, 163, 216, 0.05);
+}
+
+/* Add row button (tfoot cell) */
+.cm-table-add-row {
+  text-align: center;
+  padding: 4px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.85em;
+  border: 1px dashed transparent !important;
+  border-top: none !important;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.cm-table-wrap:hover .cm-table-add-row {
+  opacity: 1;
+}
+
+.cm-table-add-row:hover {
+  color: var(--accent);
+  border-color: var(--border) !important;
+}
+
+/* Add column button (right of table) */
+.cm-table-add-col {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.9em;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.cm-table-wrap:hover .cm-table-add-col {
+  opacity: 1;
+}
+
+.cm-table-add-col:hover {
+  color: var(--accent);
+}
+
+/* ── @decorator styles ────────────────────────────────────────────────────── */
+
+.cm-decorator-file {
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.cm-decorator-file:hover { color: var(--accent-hover); }
+
+.cm-decorator {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+  line-height: 1.4;
+  vertical-align: middle;
+  user-select: none;
+}
+
+.cm-decorator-now {
+  color: var(--green);
+  background: rgba(106, 191, 105, 0.12);
+  border: 1px solid rgba(106, 191, 105, 0.25);
+}
+
+.cm-decorator-tag {
+  color: var(--purple);
+  background: rgba(160, 125, 216, 0.12);
+  border: 1px solid rgba(160, 125, 216, 0.25);
+}
+
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar       { width: 6px; height: 6px; }
@@ -227,3 +357,29 @@ html, body {
 .cm-editor .cm-searchMatch-selected {
   background: rgba(111, 163, 216, 0.5);
 }
+
+/* ── Autocomplete tooltip ─────────────────────────────────────────────────── */
+
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+  font-family: var(--font-body);
+  font-size: 13px;
+}
+
+.cm-tooltip-autocomplete ul li {
+  color: var(--text) !important;
+  padding: 4px 10px !important;
+}
+
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background: rgba(111, 163, 216, 0.2) !important;
+  color: var(--text) !important;
+}
+
+.cm-completionLabel { color: var(--text); }
+.cm-completionDetail { color: var(--text-muted); font-style: normal; margin-left: 8px; }
+.cm-completionIcon-keyword::after { content: "@"; color: var(--accent); }
+.cm-completionIcon-file::after    { content: "◈"; color: var(--text-muted); }

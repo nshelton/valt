@@ -23,9 +23,8 @@ esbuild.js           Dual-bundle: extension (CJS) + webview (IIFE).
 
 1. **Typed message bus** — never bypass `messages.ts`. Add interface first, then `case` in the switch.
 2. **Two worlds** — `dist/extension.js` is Node/CJS. `dist/webview.js` is browser IIFE. Never import `vscode` in `src/webview/`.
-3. **No React, no Tailwind, no CSS frameworks.** Vanilla TS + CodeMirror.
-4. **Runtime deps**: CodeMirror 6 packages only (`@codemirror/*`).
-5. **Keep it simple** — the editor is CodeMirror, not a custom content-editable system.
+3. **No React, no Tailwind, no CSS frameworks.** Vanilla TS + CodeMirror. 
+4. pilling in small libraries and dependencies for a specific component are acceptable
 
 ## Data flow — open a file
 

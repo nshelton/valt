@@ -115,6 +115,7 @@ function buildWebviewHtml(
 function handleWebviewMessage(message: WebviewMessage): void {
   switch (message.type) {
     case "ready":
+      sendFileIndex();
       break;
     case "requestFile":
       sendFileToWebview(message.path);
@@ -142,6 +143,16 @@ function sendFileToWebview(filePath: string): void {
   } catch {
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
   }
+}
+
+function sendFileIndex(): void {
+  if (!panel) return;
+  vscode.workspace.findFiles("**/*.md", "**/node_modules/**").then((uris) => {
+    if (!panel) return;
+    const files = uris.map((u) => path.basename(u.fsPath));
+    const msg: ExtensionMessage = { type: "fileIndex", files };
+    panel.webview.postMessage(msg);
+  });
 }
 
 function handleSaveFile(filePath: string, content: string): void {

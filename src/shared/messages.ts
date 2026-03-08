@@ -12,7 +12,12 @@ export interface OpenFileMessage {
   webviewBaseUri: string;
 }
 
-export type ExtensionMessage = OpenFileMessage;
+export interface FileIndexMessage {
+  type: "fileIndex";
+  files: string[]; // basenames of all .md files in the workspace
+}
+
+export type ExtensionMessage = OpenFileMessage | FileIndexMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 

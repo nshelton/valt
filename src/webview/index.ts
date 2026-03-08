@@ -1,7 +1,7 @@
 /**
  * Webview entry point — CodeMirror 6 markdown editor.
  */
-import { EditorView, keymap, lineNumbers, highlightActiveLine, drawSelection } from "@codemirror/view";
+import { EditorView, keymap, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -10,7 +10,13 @@ import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from "@code
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
+import { tablePlugin } from "./tablePlugin";
+import { createDecoratorExtensions } from "./decorators";
+import { DateTimeProvider, PageProvider, TagProvider } from "./decoratorProviders";
 import styles from "./style.css";
+
+const pageProvider = new PageProvider();
+const providers = [new TagProvider(), pageProvider, new DateTimeProvider()];
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: WebviewMessage): void;
@@ -89,6 +95,12 @@ function createEditor(content: string): EditorView {
       }),
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       syntaxHighlighting(headingStyles),
+      tablePlugin,
+      ...createDecoratorExtensions(
+        providers,
+        (msg) => vscode.postMessage(msg),
+        (name) => currentFilePath.substring(0, currentFilePath.lastIndexOf("/") + 1) + name,
+      ),
       updateListener,
       EditorView.lineWrapping,
     ],
@@ -114,6 +126,9 @@ function handleExtensionMessage(message: ExtensionMessage): void {
     case "openFile":
       currentFilePath = message.path;
       showDocument(message.content);
+      break;
+    case "fileIndex":
+      pageProvider.setFiles(message.files);
       break;
   }
 }
