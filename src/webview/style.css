@@ -327,7 +327,11 @@ html, body {
   user-select: none;
 }
 
-.cm-table-wrap:hover .cm-table-del-btn {
+tr:hover .cm-row-del-cell .cm-table-del-btn {
+  color: var(--text-faint);
+}
+
+.cm-col-hovered .cm-table-del-btn {
   color: var(--text-faint);
 }
 

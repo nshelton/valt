@@ -4,6 +4,7 @@
 import { EditorView, keymap, highlightActiveLine, drawSelection } from "@codemirror/view";
 import { EditorState } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
+import { autocompletion } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from "@codemirror/language";
@@ -11,7 +12,9 @@ import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
 import { tablePlugin } from "./tablePlugin";
-import { createDecoratorExtensions } from "./decorators";
+import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
+import { emojiCompletionSource } from "./emojiPlugin";
+import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
 import { DateTimeProvider, PageProvider, TagProvider } from "./decoratorProviders";
 import styles from "./style.css";
 
@@ -85,6 +88,8 @@ function createEditor(content: string): EditorView {
       highlightActiveLine(),
       highlightSelectionMatches(),
       keymap.of([
+        { key: "Mod-b", run: boldCommand },
+        { key: "Mod-i", run: italicCommand },
         ...defaultKeymap,
         ...historyKeymap,
         ...searchKeymap,
@@ -97,11 +102,13 @@ function createEditor(content: string): EditorView {
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       syntaxHighlighting(headingStyles),
       tablePlugin,
+      inlineStylePlugin,
       ...createDecoratorExtensions(
         providers,
         (msg) => vscode.postMessage(msg),
         (name) => currentFilePath.substring(0, currentFilePath.lastIndexOf("/") + 1) + name,
       ),
+      autocompletion({ override: [createDecoratorCompletionSource(providers), emojiCompletionSource] }),
       updateListener,
       EditorView.lineWrapping,
     ],
@@ -132,7 +139,7 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       pageProvider.setFiles(message.files);
       break;
     case "tagIndex":
-      tagProvider.setTagNames(Object.keys(message.tags));
+      tagProvider.setTagNames(Object.keys(message.tags), message.colors);
       break;
   }
 }

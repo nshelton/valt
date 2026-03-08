@@ -208,10 +208,11 @@ function buildColDelRow(
   parsed: ParsedTable, from: number, to: number,
   commentFrom: number, commentTo: number, widths: string[],
   view: EditorView, wrap: HTMLElement,
-): HTMLTableRowElement {
+): { tr: HTMLTableRowElement; colDelThs: HTMLElement[] } {
   const tr = document.createElement("tr");
   tr.className = "cm-col-del-row";
   tr.appendChild(document.createElement("th"));
+  const colDelThs: HTMLElement[] = [];
   parsed.headers.forEach((_, col) => {
     const th = document.createElement("th");
     th.appendChild(makeDelBtn("Delete column", () => {
@@ -228,20 +229,23 @@ function buildColDelRow(
         : [{ from, to, insert: reconstructTable(newParsed) }];
       view.dispatch({ changes });
     }));
+    th.addEventListener("mouseenter", () => th.classList.add("cm-col-hovered"));
+    th.addEventListener("mouseleave", () => th.classList.remove("cm-col-hovered"));
     tr.appendChild(th);
+    colDelThs.push(th);
   });
-  return tr;
+  return { tr, colDelThs };
 }
 
 function buildHead(
   parsed: ParsedTable, from: number, to: number,
   nodeFrom: number, commentFrom: number, commentTo: number,
   widths: string[], view: EditorView, wrap: HTMLElement,
-  cols: HTMLTableColElement[],
+  cols: HTMLTableColElement[], colDelTr: HTMLTableRowElement, colDelThs: HTMLElement[],
 ): HTMLTableSectionElement {
   const { headers, alignments } = parsed;
   const thead = document.createElement("thead");
-  thead.appendChild(buildColDelRow(parsed, from, to, commentFrom, commentTo, widths, view, wrap));
+  thead.appendChild(colDelTr);
   const tr = document.createElement("tr");
   tr.appendChild(document.createElement("th")); // gutter spacer
   const initW = cols.map((c) => parseFloat(c.style.width) || 100 / headers.length);
@@ -251,6 +255,11 @@ function buildHead(
       const updated = { ...parsed, headers: headers.map((h, i) => (i === col ? content.textContent?.trim() ?? h : h)) };
       view.dispatch({ changes: { from, to, insert: reconstructTable(updated) } });
     });
+    th.addEventListener("mouseenter", () => colDelThs[col]?.classList.add("cm-col-hovered"));
+    th.addEventListener("mouseleave", (e) => {
+      if (e.relatedTarget instanceof Element && colDelThs[col]?.contains(e.relatedTarget)) return;
+      colDelThs[col]?.classList.remove("cm-col-hovered");
+    });
     if (col < headers.length - 1) attachResizeHandle(th, col, cols, initW, wrap, nodeFrom, commentFrom, commentTo, view);
     tr.appendChild(th);
   });
@@ -258,7 +267,7 @@ function buildHead(
   return thead;
 }
 
-function buildBody(parsed: ParsedTable, from: number, to: number, view: EditorView, wrap: HTMLElement): HTMLTableSectionElement {
+function buildBody(parsed: ParsedTable, from: number, to: number, view: EditorView, wrap: HTMLElement, colDelThs: HTMLElement[]): HTMLTableSectionElement {
   const { rows, alignments } = parsed;
   const tbody = document.createElement("tbody");
   rows.forEach((row, rowIdx) => {
@@ -275,6 +284,11 @@ function buildBody(parsed: ParsedTable, from: number, to: number, view: EditorVi
       attachCellKeys(td, () => {
         const nr = rows.map((r, ri) => ri === rowIdx ? r.map((c, ci) => (ci === col ? td.textContent?.trim() ?? c : c)) : r);
         view.dispatch({ changes: { from, to, insert: reconstructTable({ ...parsed, rows: nr }) } });
+      });
+      td.addEventListener("mouseenter", () => colDelThs[col]?.classList.add("cm-col-hovered"));
+      td.addEventListener("mouseleave", (e) => {
+        if (e.relatedTarget instanceof Element && colDelThs[col]?.contains(e.relatedTarget)) return;
+        colDelThs[col]?.classList.remove("cm-col-hovered");
       });
       tr.appendChild(td);
     });
@@ -352,11 +366,12 @@ class TableWidget extends WidgetType {
     scroll.className = "cm-table-scroll";
 
     const { colgroup, cols } = buildColgroup(widths, parsed.headers.length);
+    const { tr: colDelTr, colDelThs } = buildColDelRow(parsed, from, to, commentFrom, commentTo, widths, view, wrap);
     const table = document.createElement("table");
     table.className = "cm-table-widget";
     table.appendChild(colgroup);
-    table.appendChild(buildHead(parsed, from, to, nodeFrom, commentFrom, commentTo, widths, view, wrap, cols));
-    table.appendChild(buildBody(parsed, from, to, view, wrap));
+    table.appendChild(buildHead(parsed, from, to, nodeFrom, commentFrom, commentTo, widths, view, wrap, cols, colDelTr, colDelThs));
+    table.appendChild(buildBody(parsed, from, to, view, wrap, colDelThs));
     table.appendChild(buildFoot(parsed, from, to, view, wrap));
 
     scroll.appendChild(table);

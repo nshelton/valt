@@ -185,10 +185,12 @@ function sendTagIndex(): void {
   if (!panel) return;
   const index = tagTreeProvider ? [...tagTreeProvider["index"].entries()] : [];
   const tags: Record<string, string[]> = {};
+  const colors: Record<string, string> = {};
   for (const [tag, files] of index) {
     tags[tag] = files.map((f) => path.basename(f));
+    if (tagTreeProvider) colors[tag] = tagTreeProvider.colorFor(tag);
   }
-  panel.webview.postMessage({ type: "tagIndex", tags } satisfies ExtensionMessage);
+  panel.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
 }
 
 function handleSaveFile(filePath: string, content: string): void {

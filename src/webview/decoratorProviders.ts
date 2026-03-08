@@ -10,9 +10,10 @@ import type { EditorView } from "@codemirror/view";
 // ── Shared types ──────────────────────────────────────────────────────────────
 
 export interface DecoratorSpec {
-  displayText: string; // text shown in the badge / widget
-  cssClass: string;    // class(es) on the rendered element
-  isReplace: boolean;  // true → Decoration.replace (widget); false → Decoration.mark
+  displayText: string;                    // text shown in the badge / widget
+  cssClass: string;                       // class(es) on the rendered element
+  isReplace: boolean;                     // true → Decoration.replace (widget); false → Decoration.mark
+  attributes?: Record<string, string>;   // optional HTML attributes (e.g. inline style for mark decorations)
 }
 
 export abstract class DecoratorProvider {
@@ -124,19 +125,38 @@ export class PageProvider extends DecoratorProvider {
 
 // ── Tag provider ──────────────────────────────────────────────────────────────
 
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace("#", "");
+  const full = h.length === 3
+    ? h.split("").map((c) => c + c).join("")
+    : h.padEnd(6, "0");
+  const r = parseInt(full.slice(0, 2), 16);
+  const g = parseInt(full.slice(2, 4), 16);
+  const b = parseInt(full.slice(4, 6), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
 export class TagProvider extends DecoratorProvider {
   private tagNames: string[] = [];
+  private tagColors: Record<string, string> = {};
 
-  setTagNames(names: string[]): void {
+  setTagNames(names: string[], colors: Record<string, string> = {}): void {
     this.tagNames = names;
+    this.tagColors = colors;
   }
 
   tryMatch(afterAt: string): DecoratorSpec | null {
     if (!afterAt.startsWith("tag(") || !afterAt.endsWith(")")) return null;
+    const label = afterAt.slice(4, -1).trim();
+    const color = this.tagColors[label];
+    const attributes = color ? {
+      style: `color:${color};background:${hexToRgba(color, 0.12)};border-color:${hexToRgba(color, 0.28)};`,
+    } : undefined;
     return {
       displayText: afterAt, // not used for mark decorations
       cssClass: "cm-decorator-tag",
       isReplace: false, // mark: keeps styling even when cursor is inside
+      attributes,
     };
   }
 

@@ -13,7 +13,7 @@ import {
   ViewPlugin, DecorationSet, Decoration, WidgetType, EditorView, ViewUpdate,
 } from "@codemirror/view";
 import { RangeSetBuilder, Annotation, Extension } from "@codemirror/state";
-import { autocompletion, CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import type { DecoratorProvider } from "./decoratorProviders";
 import { formatDate } from "./decoratorProviders";
 import type { WebviewMessage } from "../shared/messages";
@@ -90,7 +90,7 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
           }));
         } else {
           // Mark decorations: always render — styling persists even while editing
-          builder.add(mFrom, mTo, Decoration.mark({ class: spec.cssClass }));
+          builder.add(mFrom, mTo, Decoration.mark({ class: spec.cssClass, attributes: spec.attributes }));
         }
       }
 
@@ -209,7 +209,10 @@ export function createDecoratorExtensions(
 ): Extension[] {
   return [
     createDecoratorPlugin(providers, postMessage, resolveFile),
-    autocompletion({ override: [createCompletionSource(providers)] }),
     nowReplacer,
   ];
+}
+
+export function createDecoratorCompletionSource(providers: DecoratorProvider[]) {
+  return createCompletionSource(providers);
 }

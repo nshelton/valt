@@ -19,7 +19,8 @@ export interface FileIndexMessage {
 
 export interface TagIndexMessage {
   type: "tagIndex";
-  tags: Record<string, string[]>; // tagName → basenames of files containing it
+  tags: Record<string, string[]>;   // tagName → basenames of files containing it
+  colors: Record<string, string>;   // tagName → hex color
 }
 
 export type ExtensionMessage = OpenFileMessage | FileIndexMessage | TagIndexMessage;
