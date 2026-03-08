@@ -2,18 +2,26 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
+import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
 let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
+let tagTreeProvider: ValtTagTreeProvider | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = getWorkspaceRoot();
 
   treeProvider = new ValtTreeProvider(workspaceRoot ?? "");
+  tagTreeProvider = new ValtTagTreeProvider();
 
-  const treeView = vscode.window.createTreeView("valt.fileTree", {
+  const fileTreeView = vscode.window.createTreeView("valt.fileTree", {
     treeDataProvider: treeProvider,
+    showCollapseAll: true,
+  });
+
+  const tagTreeView = vscode.window.createTreeView("valt.tagTree", {
+    treeDataProvider: tagTreeProvider,
     showCollapseAll: true,
   });
 
@@ -33,7 +41,30 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider?.refresh();
   });
 
-  context.subscriptions.push(treeView, openCmd, openFileCmd, refreshCmd);
+  const setTagColorCmd = vscode.commands.registerCommand(
+    "valt.setTagColor",
+    async (item?: { tagName?: string }) => {
+      const tagName = item?.tagName;
+      if (!tagName || !tagTreeProvider) return;
+      await tagTreeProvider.promptSetColor(tagName);
+    }
+  );
+
+  // Rebuild tag index when config changes (tag colors updated)
+  const cfgWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("valt.tagColors")) {
+      tagTreeProvider?.refresh();
+    }
+  });
+
+  context.subscriptions.push(
+    fileTreeView, tagTreeView,
+    openCmd, openFileCmd, refreshCmd, setTagColorCmd,
+    cfgWatcher,
+  );
+
+  // Build tag index eagerly so the tree is populated before a file is opened
+  rebuildTagIndex();
 }
 
 export function deactivate(): void {}
@@ -116,6 +147,7 @@ function handleWebviewMessage(message: WebviewMessage): void {
   switch (message.type) {
     case "ready":
       sendFileIndex();
+      sendTagIndex();
       break;
     case "requestFile":
       sendFileToWebview(message.path);
@@ -133,12 +165,7 @@ function sendFileToWebview(filePath: string): void {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
     const webviewBaseUri = panel.webview.asWebviewUri(dirUri).toString();
-    const msg: ExtensionMessage = {
-      type: "openFile",
-      path: filePath,
-      content,
-      webviewBaseUri,
-    };
+    const msg: ExtensionMessage = { type: "openFile", path: filePath, content, webviewBaseUri };
     panel.webview.postMessage(msg);
   } catch {
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
@@ -150,18 +177,73 @@ function sendFileIndex(): void {
   vscode.workspace.findFiles("**/*.md", "**/node_modules/**").then((uris) => {
     if (!panel) return;
     const files = uris.map((u) => path.basename(u.fsPath));
-    const msg: ExtensionMessage = { type: "fileIndex", files };
-    panel.webview.postMessage(msg);
+    panel.webview.postMessage({ type: "fileIndex", files } satisfies ExtensionMessage);
   });
+}
+
+function sendTagIndex(): void {
+  if (!panel) return;
+  const index = tagTreeProvider ? [...tagTreeProvider["index"].entries()] : [];
+  const tags: Record<string, string[]> = {};
+  for (const [tag, files] of index) {
+    tags[tag] = files.map((f) => path.basename(f));
+  }
+  panel.webview.postMessage({ type: "tagIndex", tags } satisfies ExtensionMessage);
 }
 
 function handleSaveFile(filePath: string, content: string): void {
   try {
     fs.writeFileSync(filePath, content, "utf8");
     treeProvider?.refresh();
+    updateTagIndexForFile(filePath, content);
   } catch {
     vscode.window.showErrorMessage("Valt: Could not save file.");
   }
+}
+
+// ── Tag index ─────────────────────────────────────────────────────────────────
+
+function buildTagIndexFromContent(filePath: string, content: string, index: TagIndex): void {
+  const re = /@tag\(([^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const tag = m[1].trim();
+    if (!tag) continue;
+    if (!index.has(tag)) index.set(tag, []);
+    const files = index.get(tag)!;
+    if (!files.includes(filePath)) files.push(filePath);
+  }
+}
+
+async function rebuildTagIndex(): Promise<void> {
+  const uris = await vscode.workspace.findFiles("**/*.md", "**/node_modules/**");
+  const index: TagIndex = new Map();
+  for (const uri of uris) {
+    try {
+      const content = fs.readFileSync(uri.fsPath, "utf8");
+      buildTagIndexFromContent(uri.fsPath, content, index);
+    } catch { /* skip unreadable files */ }
+  }
+  tagTreeProvider?.setIndex(index);
+}
+
+function updateTagIndexForFile(filePath: string, content: string): void {
+  if (!tagTreeProvider) return;
+  const index: TagIndex = tagTreeProvider["index"];
+
+  // Remove this file from all existing tags
+  for (const files of index.values()) {
+    const i = files.indexOf(filePath);
+    if (i >= 0) files.splice(i, 1);
+  }
+  // Clean up empty tags
+  for (const [tag, files] of index) {
+    if (files.length === 0) index.delete(tag);
+  }
+  // Re-scan and add
+  buildTagIndexFromContent(filePath, content, index);
+  tagTreeProvider.setIndex(index);
+  sendTagIndex();
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────

@@ -25,6 +25,10 @@
         "command": "valt.refreshTree",
         "title": "Valt: Refresh File Tree",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "valt.setTagColor",
+        "title": "Set Tag Color"
       }
     ],
     "viewsContainers": {
@@ -41,6 +45,10 @@
         {
           "id": "valt.fileTree",
           "name": "Files"
+        },
+        {
+          "id": "valt.tagTree",
+          "name": "Tags"
         }
       ]
     },
@@ -51,7 +59,27 @@
           "when": "view == valt.fileTree",
           "group": "navigation"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "valt.setTagColor",
+          "when": "view == valt.tagTree && viewItem == tag",
+          "group": "inline"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Valt",
+      "properties": {
+        "valt.tagColors": {
+          "type": "object",
+          "description": "Custom hex colors for @tag decorators, keyed by tag name.",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      }
     }
   },
   "scripts": {

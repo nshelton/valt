@@ -125,6 +125,12 @@ export class PageProvider extends DecoratorProvider {
 // ── Tag provider ──────────────────────────────────────────────────────────────
 
 export class TagProvider extends DecoratorProvider {
+  private tagNames: string[] = [];
+
+  setTagNames(names: string[]): void {
+    this.tagNames = names;
+  }
+
   tryMatch(afterAt: string): DecoratorSpec | null {
     if (!afterAt.startsWith("tag(") || !afterAt.endsWith(")")) return null;
     return {
@@ -136,9 +142,18 @@ export class TagProvider extends DecoratorProvider {
 
   completions(query: string): Completion[] {
     const q = query.toLowerCase();
-    if ("tag".startsWith(q) || q.startsWith("tag")) {
-      return [{ label: "@tag()", type: "keyword", detail: "tag pill" }];
+    if (!q.startsWith("tag")) return [];
+
+    // Extract partial label: "tag(" → "", "tag(wo" → "wo"
+    const partial = q.startsWith("tag(") ? q.slice(4) : "";
+
+    if (this.tagNames.length > 0) {
+      return this.tagNames
+        .filter((name) => name.toLowerCase().startsWith(partial))
+        .map((name): Completion => ({ label: `@tag(${name})`, type: "keyword" }));
     }
-    return [];
+
+    // Fallback when no tags exist yet — offer the template
+    return [{ label: "@tag()", type: "keyword", detail: "tag pill" }];
   }
 }

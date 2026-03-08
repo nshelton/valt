@@ -15,8 +15,9 @@ import { createDecoratorExtensions } from "./decorators";
 import { DateTimeProvider, PageProvider, TagProvider } from "./decoratorProviders";
 import styles from "./style.css";
 
+const tagProvider = new TagProvider();
 const pageProvider = new PageProvider();
-const providers = [new TagProvider(), pageProvider, new DateTimeProvider()];
+const providers = [tagProvider, pageProvider, new DateTimeProvider()];
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: WebviewMessage): void;
@@ -129,6 +130,9 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       break;
     case "fileIndex":
       pageProvider.setFiles(message.files);
+      break;
+    case "tagIndex":
+      tagProvider.setTagNames(Object.keys(message.tags));
       break;
   }
 }

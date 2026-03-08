@@ -17,7 +17,12 @@ export interface FileIndexMessage {
   files: string[]; // basenames of all .md files in the workspace
 }
 
-export type ExtensionMessage = OpenFileMessage | FileIndexMessage;
+export interface TagIndexMessage {
+  type: "tagIndex";
+  tags: Record<string, string[]>; // tagName → basenames of files containing it
+}
+
+export type ExtensionMessage = OpenFileMessage | FileIndexMessage | TagIndexMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
