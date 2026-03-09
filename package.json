@@ -85,7 +85,8 @@
   "scripts": {
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
-    "vscode:prepublish": "node esbuild.js --production"
+    "vscode:prepublish": "node esbuild.js --production",
+    "package": "vsce package"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",
