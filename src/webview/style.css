@@ -423,7 +423,7 @@ tr:hover .cm-row-del-cell .cm-table-del-btn {
 .cm-decorator {
   display: inline-block;
   font-family: var(--font-mono);
-  font-size: 0.82em;
+  font-size: 1.05em;
   border-radius: 3px;
   padding: 0.1em 0.4em;
   line-height: 1.4;
