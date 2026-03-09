@@ -25,10 +25,15 @@ export abstract class DecoratorProvider {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
+const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
 function formatDate(d: Date): string {
-  const date = d.toISOString().slice(0, 10);
-  if (d.getHours() === 0 && d.getMinutes() === 0) return date;
-  return `${date} ${d.toTimeString().slice(0, 5)}`;
+  const dateStr = `${DAY_NAMES[d.getDay()]} ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+  const h = d.getHours(), m = d.getMinutes();
+  // chrono-node defaults to 12:00 for date-only phrases; treat that as no time
+  if ((h === 0 && m === 0) || (h === 12 && m === 0)) return dateStr;
+  return `${dateStr} ${d.toTimeString().slice(0, 5)}`;
 }
 
 // Exported so the @now replacer can reuse it.
@@ -77,7 +82,15 @@ export class DateTimeProvider extends DecoratorProvider {
       .map((s): Completion => {
         const label = s.quoted ? `@"${s.text}"` : `@${s.text}`;
         const d = chrono.parseDate(s.text, new Date());
-        return { label, type: "keyword", detail: d ? formatDate(d) : undefined };
+        return {
+          label, type: "keyword", detail: d ? formatDate(d) : undefined,
+          // Resolve immediately to the actual date, like @now
+          apply: d
+            ? (view: EditorView, _: Completion, from: number, to: number) => {
+                view.dispatch({ changes: { from, to, insert: "@" + formatDate(chrono.parseDate(s.text, new Date())!) } });
+              }
+            : undefined,
+        };
       });
 
     // Always include @now if query could match "now"

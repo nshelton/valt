@@ -16,6 +16,7 @@ import { RangeSetBuilder, Annotation, Extension } from "@codemirror/state";
 import { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
 import type { DecoratorProvider } from "./decoratorProviders";
 import { formatDate } from "./decoratorProviders";
+import * as chrono from "chrono-node";
 import type { WebviewMessage } from "../shared/messages";
 
 // ── Regex ─────────────────────────────────────────────────────────────────────
@@ -181,13 +182,16 @@ function createCompletionSource(providers: DecoratorProvider[]) {
 
 const nowReplacedAnnotation = Annotation.define<true>();
 
+// Matches @now, @word (bare date words), and @"quoted phrase" — but not @tag(...), @file.md, @[bracket]
+const EPHEMERAL_DATE_RE = /@now\b|@"([^"]*)"|@(?!tag\()(?![\w.-]+\.md\b)(?!\[)([\w-]+)\b/g;
+
 const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   if (!update.docChanged) return;
   if (update.transactions.some((tr) => tr.annotation(nowReplacedAnnotation))) return;
 
   const text = update.state.doc.toString();
   const cursor = update.state.selection.main.head;
-  const re = /@now\b/g;
+  const re = new RegExp(EPHEMERAL_DATE_RE.source, "g");
   const changes: { from: number; to: number; insert: string }[] = [];
   let m: RegExpExecArray | null;
 
@@ -195,8 +199,18 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
     const from = m.index;
     const to = from + m[0].length;
     // Replace only once cursor has moved past the token (user finished typing it)
-    if (cursor < from || cursor > to) {
+    if (cursor >= from && cursor <= to) continue;
+
+    const raw = m[0];
+    if (raw === "@now") {
       changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+    } else {
+      // Extract the date text from quoted or bare word
+      const dateText = m[1] ?? m[2]; // group 1 = quoted phrase, group 2 = bare word
+      if (!dateText) continue;
+      const parsed = chrono.parseDate(dateText, new Date());
+      if (!parsed) continue;
+      changes.push({ from, to, insert: "@" + formatDate(parsed) });
     }
   }
 
