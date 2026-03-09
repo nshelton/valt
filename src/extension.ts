@@ -11,7 +11,10 @@ let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 const pageIndex = new PageIndex();
 let webviewReady = false;
-let pendingFilePath: string | null = null;
+
+// File queued to open as soon as the webview sends its `ready` handshake.
+// Needed because the panel may not have finished loading when valt.openFile fires.
+let pendingFile: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = getWorkspaceRoot();
@@ -36,11 +39,14 @@ export function activate(context: vscode.ExtensionContext): void {
   const openFileCmd = vscode.commands.registerCommand(
     "valt.openFile",
     (filePath: string) => {
-      openValtPanel(context);
-      if (webviewReady) {
+      if (panel) {
+        // Panel is already open and the webview is ready — send immediately.
+        panel.reveal(vscode.ViewColumn.One);
         sendFileToWebview(filePath);
       } else {
-        pendingFilePath = filePath;
+        // Panel is being created; the webview will request the file on `ready`.
+        pendingFile = filePath;
+        openValtPanel(context);
       }
     }
   );
@@ -121,7 +127,7 @@ function openValtPanel(context: vscode.ExtensionContext): void {
   panel.onDidDispose(() => {
     panel = undefined;
     webviewReady = false;
-    pendingFilePath = null;
+    pendingFile = undefined;
   }, undefined, context.subscriptions);
 }
 
@@ -171,9 +177,9 @@ function handleWebviewMessage(message: WebviewMessage): void {
       webviewReady = true;
       sendFileIndex();
       sendTagIndex();
-      if (pendingFilePath) {
-        sendFileToWebview(pendingFilePath);
-        pendingFilePath = null;
+      if (pendingFile) {
+        sendFileToWebview(pendingFile);
+        pendingFile = undefined;
       }
       break;
     case "requestFile":
@@ -230,7 +236,7 @@ function sendFileIndex(): void {
 
 function sendTagIndex(): void {
   if (!panel) return;
-  const index = tagTreeProvider ? [...tagTreeProvider["index"].entries()] : [];
+  const index = tagTreeProvider ? [...tagTreeProvider.getIndex().entries()] : [];
   const tags: Record<string, string[]> = {};
   const colors: Record<string, string> = {};
   for (const [tag, files] of index) {
@@ -347,7 +353,7 @@ async function rebuildIndexes(): Promise<void> {
 // Keep for incremental tag updates on save
 function updateTagIndexForFile(filePath: string, content: string): void {
   if (!tagTreeProvider) return;
-  const index: TagIndex = tagTreeProvider["index"];
+  const index: TagIndex = tagTreeProvider.getIndex();
 
   // Remove this file from all existing tags
   for (const files of index.values()) {

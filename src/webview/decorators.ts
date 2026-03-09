@@ -50,12 +50,14 @@ class DecoratorWidget extends WidgetType {
 function buildDecorations(view: EditorView, providers: DecoratorProvider[]): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const { from: curFrom, to: curTo } = view.state.selection.main;
+  // One regex instance per call; reset lastIndex per line rather than allocating per line.
+  const re = new RegExp(DECORATOR_PATTERN.source, "g");
 
   for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
     let pos = rangeFrom;
     while (pos <= rangeTo) {
       const line = view.state.doc.lineAt(pos);
-      DECORATOR_PATTERN.lastIndex = 0;
+      re.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = DECORATOR_PATTERN.exec(line.text)) !== null) {
@@ -192,30 +194,29 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   const cursor = update.state.selection.main.head;
   const changes: { from: number; to: number; insert: string }[] = [];
 
-  // Only scan lines that were affected by changes, not the entire document
+  // Only scan lines touched by this transaction — avoids stringifying the whole doc.
+  const re = new RegExp(EPHEMERAL_DATE_RE.source, "g");
   update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
-    // Expand to full lines around the changed range
-    const startLine = update.state.doc.lineAt(fromB);
-    const endLine = update.state.doc.lineAt(Math.min(toB, update.state.doc.length));
-    for (let lineNum = startLine.number; lineNum <= endLine.number; lineNum++) {
-      const line = update.state.doc.line(lineNum);
-      EPHEMERAL_DATE_RE.lastIndex = 0;
-      let m: RegExpExecArray | null;
-      while ((m = EPHEMERAL_DATE_RE.exec(line.text)) !== null) {
-        const from = line.from + m.index;
-        const to = from + m[0].length;
-        if (cursor >= from && cursor <= to) continue;
+    const lineFrom = update.state.doc.lineAt(fromB).from;
+    const lineTo   = update.state.doc.lineAt(Math.min(toB, update.state.doc.length - 1)).to;
+    const text     = update.state.doc.sliceString(lineFrom, lineTo);
+    re.lastIndex   = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const from = lineFrom + m.index;
+      const to   = from + m[0].length;
+      // Replace only once cursor has moved past the token (user finished typing it)
+      if (cursor >= from && cursor <= to) continue;
 
-        const raw = m[0];
-        if (raw === "@now") {
-          changes.push({ from, to, insert: "@" + formatDate(new Date()) });
-        } else {
-          const dateText = m[1] ?? m[2];
-          if (!dateText) continue;
-          const parsed = chrono.parseDate(dateText, new Date());
-          if (!parsed) continue;
-          changes.push({ from, to, insert: "@" + formatDate(parsed) });
-        }
+      const raw = m[0];
+      if (raw === "@now") {
+        changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+      } else {
+        const dateText = m[1] ?? m[2]; // group 1 = quoted phrase, group 2 = bare word
+        if (!dateText) continue;
+        const parsed = chrono.parseDate(dateText, new Date());
+        if (!parsed) continue;
+        changes.push({ from, to, insert: "@" + formatDate(parsed) });
       }
     }
   });

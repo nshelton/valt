@@ -92,6 +92,10 @@ export class ValtTagTreeProvider implements vscode.TreeDataProvider<TagTreeItem>
   // Auto-assigned palette colors (persisted for the session)
   private readonly assigned = new Map<string, string>();
 
+  getIndex(): TagIndex {
+    return this.index;
+  }
+
   setIndex(index: TagIndex): void {
     this.index = index;
     this._onChange.fire();

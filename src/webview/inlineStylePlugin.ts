@@ -16,12 +16,14 @@ const INLINE_PATTERN = /(\*\*([^*\n]+)\*\*)|\*([^*\n]+)\*/g;
 function buildDecorations(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const { from: curFrom, to: curTo } = view.state.selection.main;
+  // One regex instance per call; reset lastIndex per line rather than allocating per line.
+  const re = new RegExp(INLINE_PATTERN.source, "g");
 
   for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
     let pos = rangeFrom;
     while (pos <= rangeTo) {
       const line = view.state.doc.lineAt(pos);
-      const re = new RegExp(INLINE_PATTERN.source, "g");
+      re.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = re.exec(line.text)) !== null) {
