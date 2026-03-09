@@ -68,6 +68,19 @@ html, body {
   margin-bottom: 12px;
 }
 
+/* ── Page emoji header ────────────────────────────────────────────────────── */
+
+#page-emoji {
+  font-size: 4rem;
+  line-height: 1;
+  margin-bottom: 8px;
+  user-select: none;
+  /* Sit in the same column flow as the editor */
+  max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
 /* ── CodeMirror container ─────────────────────────────────────────────────── */
 
 #editor-root {

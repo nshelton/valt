@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
+import type { PageIndex, PageEntry } from "./pageIndex";
 
 // ── Tree item ─────────────────────────────────────────────────────────────────
 
@@ -36,7 +37,15 @@ export class ValtTreeProvider
     new vscode.EventEmitter<ValtTreeItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  constructor(private readonly rootPath: string) {}
+  private pageIndex: PageIndex | null = null;
+
+  constructor(private readonly rootPath: string, pageIndex?: PageIndex) {
+    this.pageIndex = pageIndex ?? null;
+  }
+
+  setPageIndex(index: PageIndex): void {
+    this.pageIndex = index;
+  }
 
   refresh(): void {
     this._onDidChangeTreeData.fire();
@@ -75,9 +84,10 @@ export class ValtTreeProvider
           );
         }
       } else if (entry.name.endsWith(".md")) {
+        const label = this.labelFor(fullPath, entry.name);
         files.push(
           new ValtTreeItem(
-            entry.name,
+            label,
             fullPath,
             false,
             vscode.TreeItemCollapsibleState.None
@@ -86,7 +96,37 @@ export class ValtTreeProvider
       }
     }
 
-    return [...dirs, ...sortFiles(files)];
+    return [...dirs, ...this.sortFiles(files)];
+  }
+
+  /**
+   * Compute the display label for a file tree item.
+   * If the file is in the page index, use its display name (+ emoji prefix).
+   * Otherwise fall back to the filename stem stripped of any leading `[id] `.
+   */
+  private labelFor(fsPath: string, basename: string): string {
+    const entry: PageEntry | undefined = this.pageIndex?.getByPath(fsPath);
+    if (entry) {
+      return entry.emoji ? `${entry.emoji} ${entry.displayName}` : entry.displayName;
+    }
+    // Fallback: strip `[id] ` prefix and `.md` extension
+    return basename.replace(/\.md$/, "").replace(/^\d+\s+/, "");
+  }
+
+  private sortFiles(files: ValtTreeItem[]): ValtTreeItem[] {
+    // Gather page entries to sort by numeric ID where available
+    return files.sort((a, b) => {
+      const entryA = this.pageIndex?.getByPath(a.fsPath);
+      const entryB = this.pageIndex?.getByPath(b.fsPath);
+
+      const idA = entryA?.id ?? null;
+      const idB = entryB?.id ?? null;
+
+      if (idA !== null && idB !== null) return idA - idB;
+      if (idA !== null) return -1;
+      if (idB !== null) return 1;
+      return (a.label as string).localeCompare(b.label as string);
+    });
   }
 
   private directoryContainsMarkdown(dir: string): boolean {
@@ -101,19 +141,4 @@ export class ValtTreeProvider
       return false;
     }
   }
-}
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/**
- * Sort file tree items: `_index.md` first, then alphabetically by label.
- */
-function sortFiles(files: ValtTreeItem[]): ValtTreeItem[] {
-  return files.sort((a, b) => {
-    const aIsIndex = a.label === "_index.md";
-    const bIsIndex = b.label === "_index.md";
-    if (aIsIndex && !bIsIndex) return -1;
-    if (!aIsIndex && bIsIndex) return 1;
-    return (a.label as string).localeCompare(b.label as string);
-  });
 }

@@ -90,22 +90,52 @@ export class DateTimeProvider extends DecoratorProvider {
 
 // ── Page provider ─────────────────────────────────────────────────────────────
 
+export interface PageInfo {
+  filename: string;
+  displayName: string;
+  emoji: string | null;
+}
+
 export class PageProvider extends DecoratorProvider {
+  /** displayName.toLowerCase() → PageInfo */
+  private pageMap: Map<string, PageInfo> = new Map();
+  /** Raw filename set for backward-compat @filename.md links */
   private fileSet = new Set<string>();
 
-  setFiles(basenames: string[]): void {
-    this.fileSet = new Set(basenames);
+  setPages(pages: PageInfo[]): void {
+    this.pageMap.clear();
+    this.fileSet.clear();
+    for (const p of pages) {
+      this.pageMap.set(p.displayName.toLowerCase(), p);
+      this.fileSet.add(p.filename);
+    }
   }
 
   tryMatch(afterAt: string): DecoratorSpec | null {
-    if (!afterAt.endsWith(".md")) return null;
-    // Strip path-only portion for display — show just the stem before the uuid/extension
-    const stem = afterAt.replace(/\.md$/, "").replace(/\s+[a-f0-9]{32}$/, "").trim();
-    return {
-      displayText: stem || afterAt,
-      cssClass: "cm-decorator-file",
-      isReplace: false,
-    };
+    // New style: @[Display Name] — bracket content without .md
+    if (!afterAt.endsWith(".md")) {
+      const page = this.pageMap.get(afterAt.toLowerCase());
+      if (!page) return null;
+      const display = page.emoji ? `${page.emoji} ${page.displayName}` : page.displayName;
+      return {
+        displayText: display,
+        cssClass: "cm-decorator-file",
+        isReplace: false,
+      };
+    }
+
+    // Legacy style: @[filename.md] or @simple.md — match by raw filename
+    if (this.fileSet.has(afterAt)) {
+      // Strip leading `[id] ` prefix for display
+      const stem = afterAt.replace(/\.md$/, "").replace(/^\d+\s+/, "").trim();
+      return {
+        displayText: stem || afterAt,
+        cssClass: "cm-decorator-file",
+        isReplace: false,
+      };
+    }
+
+    return null;
   }
 
   completions(query: string): Completion[] {
@@ -113,12 +143,12 @@ export class PageProvider extends DecoratorProvider {
     const isBracket = query.startsWith("[");
     const q = (isBracket ? query.slice(1) : query).toLowerCase();
 
-    return [...this.fileSet]
-      .filter((f) => f.toLowerCase().includes(q))
-      .map((f): Completion => {
-        // Use bracket syntax if file has spaces or special chars, or if user typed @[
-        const needsBracket = isBracket || /[\s()]/.test(f);
-        return { label: needsBracket ? `@[${f}]` : `@${f}`, type: "file" };
+    return [...this.pageMap.values()]
+      .filter((p) => p.displayName.toLowerCase().includes(q))
+      .map((p): Completion => {
+        const label = `@[${p.displayName}]`;
+        const detail = p.emoji ?? undefined;
+        return { label, type: "file", detail };
       });
   }
 }

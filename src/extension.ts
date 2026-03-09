@@ -3,16 +3,18 @@ import * as path from "path";
 import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
+import { PageIndex, rewriteLinks } from "./pageIndex";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
 let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
+const pageIndex = new PageIndex();
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = getWorkspaceRoot();
 
-  treeProvider = new ValtTreeProvider(workspaceRoot ?? "");
+  treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
   tagTreeProvider = new ValtTagTreeProvider();
 
   const fileTreeView = vscode.window.createTreeView("valt.fileTree", {
@@ -63,8 +65,8 @@ export function activate(context: vscode.ExtensionContext): void {
     cfgWatcher,
   );
 
-  // Build tag index eagerly so the tree is populated before a file is opened
-  rebuildTagIndex();
+  // Build indexes eagerly so trees are populated before a file is opened
+  rebuildIndexes();
 }
 
 export function deactivate(): void {}
@@ -133,6 +135,7 @@ function buildWebviewHtml(
         <h1>Valt</h1>
         <p>Select a file from the sidebar to get started.</p>
       </div>
+      <div id="page-emoji" style="display:none;"></div>
       <div id="editor-root" style="display:none;"></div>
     </div>
   </div>
@@ -150,12 +153,33 @@ function handleWebviewMessage(message: WebviewMessage): void {
       sendTagIndex();
       break;
     case "requestFile":
-      sendFileToWebview(message.path);
+      handleRequestFile(message.path);
       break;
     case "saveFile":
       handleSaveFile(message.filePath, message.content);
       break;
   }
+}
+
+function handleRequestFile(pathOrName: string): void {
+  // Absolute path that exists → open directly
+  if (path.isAbsolute(pathOrName) && fs.existsSync(pathOrName)) {
+    sendFileToWebview(pathOrName);
+    return;
+  }
+
+  // Try display-name lookup in page index
+  const entry = pageIndex.getByDisplayName(pathOrName);
+  if (entry) {
+    sendFileToWebview(entry.fsPath);
+    return;
+  }
+
+  // Fallback: search workspace for a file with that basename
+  vscode.workspace.findFiles(`**/${pathOrName}`, "**/node_modules/**").then((uris) => {
+    if (uris.length > 0) sendFileToWebview(uris[0].fsPath);
+    else vscode.window.showWarningMessage(`Valt: Could not find page "${pathOrName}"`);
+  });
 }
 
 function sendFileToWebview(filePath: string): void {
@@ -174,11 +198,10 @@ function sendFileToWebview(filePath: string): void {
 
 function sendFileIndex(): void {
   if (!panel) return;
-  vscode.workspace.findFiles("**/*.md", "**/node_modules/**").then((uris) => {
-    if (!panel) return;
-    const files = uris.map((u) => path.basename(u.fsPath));
-    panel.webview.postMessage({ type: "fileIndex", files } satisfies ExtensionMessage);
-  });
+  panel.webview.postMessage({
+    type: "fileIndex",
+    pages: pageIndex.toPageInfos(),
+  } satisfies ExtensionMessage);
 }
 
 function sendTagIndex(): void {
@@ -196,11 +219,62 @@ function sendTagIndex(): void {
 function handleSaveFile(filePath: string, content: string): void {
   try {
     fs.writeFileSync(filePath, content, "utf8");
-    treeProvider?.refresh();
-    updateTagIndexForFile(filePath, content);
   } catch {
     vscode.window.showErrorMessage("Valt: Could not save file.");
+    return;
   }
+
+  // Check if a rename is needed (new H1 → new canonical filename)
+  const renameResult = pageIndex.computeRename(filePath, content);
+
+  if (renameResult.needsRename) {
+    const { newPath, newFilename, oldDisplayName } = renameResult;
+
+    // Collect linkers before the rename so we can update their content
+    const linkers = pageIndex.getLinkers(filePath);
+    const newDisplayName = path.basename(newPath, ".md").replace(/^\d+\s+/, "");
+
+    // Rename the file on disk
+    try {
+      fs.renameSync(filePath, newPath);
+    } catch {
+      vscode.window.showErrorMessage(`Valt: Could not rename file to "${newFilename}"`);
+      pageIndex.updateEntry(filePath, content);
+      sendFileIndex();
+      treeProvider?.setPageIndex(pageIndex);
+      treeProvider?.refresh();
+      return;
+    }
+
+    // Commit rename in index
+    pageIndex.commitRename(filePath, newPath, content);
+
+    // Update all files that linked to the old display name
+    for (const linkerPath of linkers) {
+      try {
+        const linkerContent = fs.readFileSync(linkerPath, "utf8");
+        const updated = rewriteLinks(linkerContent, oldDisplayName, newDisplayName);
+        if (updated !== linkerContent) {
+          fs.writeFileSync(linkerPath, updated, "utf8");
+          pageIndex.updateEntry(linkerPath, updated);
+        }
+      } catch {
+        // Best-effort link rewrite; skip unreadable files
+      }
+    }
+
+    // Notify webview that the current file was renamed
+    panel?.webview.postMessage({
+      type: "fileRenamed",
+      oldPath: filePath,
+      newPath,
+    } satisfies ExtensionMessage);
+  }
+
+  updateTagIndexForFile(renameResult.needsRename ? renameResult.newPath : filePath, content);
+  sendFileIndex();
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
 }
 
 // ── Tag index ─────────────────────────────────────────────────────────────────
@@ -217,18 +291,26 @@ function buildTagIndexFromContent(filePath: string, content: string, index: TagI
   }
 }
 
-async function rebuildTagIndex(): Promise<void> {
+async function rebuildIndexes(): Promise<void> {
   const uris = await vscode.workspace.findFiles("**/*.md", "**/node_modules/**");
-  const index: TagIndex = new Map();
+  const tagIdx: TagIndex = new Map();
+  const pageFiles: { fsPath: string; content: string }[] = [];
+
   for (const uri of uris) {
     try {
       const content = fs.readFileSync(uri.fsPath, "utf8");
-      buildTagIndexFromContent(uri.fsPath, content, index);
+      buildTagIndexFromContent(uri.fsPath, content, tagIdx);
+      pageFiles.push({ fsPath: uri.fsPath, content });
     } catch { /* skip unreadable files */ }
   }
-  tagTreeProvider?.setIndex(index);
+
+  tagTreeProvider?.setIndex(tagIdx);
+  pageIndex.build(pageFiles);
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
 }
 
+// Keep for incremental tag updates on save
 function updateTagIndexForFile(filePath: string, content: string): void {
   if (!tagTreeProvider) return;
   const index: TagIndex = tagTreeProvider["index"];

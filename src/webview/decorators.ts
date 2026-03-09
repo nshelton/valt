@@ -132,15 +132,20 @@ function createDecoratorPlugin(
           const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
           if (pos == null) return false;
           const line = view.state.doc.lineAt(pos);
-          // Match both @[filename with spaces.md] and @simple.md
+          // Match @[anything] (display-name or filename.md) and @simple.md
           const fileRe = /@\[([^\]]+)\]|@([\w.-]+\.md)/g;
           let m: RegExpExecArray | null;
           while ((m = fileRe.exec(line.text)) !== null) {
             const from = line.from + m.index;
             const to = from + m[0].length;
             if (pos >= from && pos <= to) {
-              const filename = m[1] ?? m[2]; // bracket group or simple group
-              postMessage({ type: "requestFile", path: resolveFile(filename) });
+              const linkText = m[1] ?? m[2]; // bracket content or simple filename
+              // For .md links use the directory-relative path resolver;
+              // for bare display names pass through to extension for index lookup.
+              const resolved = linkText.endsWith(".md")
+                ? resolveFile(linkText)
+                : linkText;
+              postMessage({ type: "requestFile", path: resolved });
               return true;
             }
           }

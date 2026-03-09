@@ -16,7 +16,7 @@ import { createDecoratorExtensions, createDecoratorCompletionSource } from "./de
 import { emojiCompletionSource } from "./emojiPlugin";
 import { componentMenuCompletionSource } from "./componentMenu";
 import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
-import { DateTimeProvider, PageProvider, TagProvider } from "./decoratorProviders";
+import { DateTimeProvider, PageProvider, TagProvider, type PageInfo } from "./decoratorProviders";
 import styles from "./style.css";
 
 const tagProvider = new TagProvider();
@@ -37,10 +37,15 @@ let currentFilePath = "";
 let editorView: EditorView | null = null;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
+// ── Module state ── page metadata ─────────────────────────────────────────────
+
+let pageList: PageInfo[] = [];
+
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const welcomeEl  = document.getElementById("welcome")  as HTMLDivElement;
-const editorRoot = document.getElementById("editor-root") as HTMLDivElement;
+const welcomeEl   = document.getElementById("welcome")    as HTMLDivElement;
+const pageEmojiEl = document.getElementById("page-emoji") as HTMLDivElement;
+const editorRoot  = document.getElementById("editor-root") as HTMLDivElement;
 
 // ── Stylesheet injection ──────────────────────────────────────────────────────
 
@@ -135,13 +140,38 @@ function handleExtensionMessage(message: ExtensionMessage): void {
     case "openFile":
       currentFilePath = message.path;
       showDocument(message.content);
+      updateEmojiHeader(message.content);
       break;
     case "fileIndex":
-      pageProvider.setFiles(message.files);
+      pageList = message.pages;
+      pageProvider.setPages(message.pages);
       break;
     case "tagIndex":
       tagProvider.setTagNames(Object.keys(message.tags), message.colors);
       break;
+    case "fileRenamed":
+      if (currentFilePath === message.oldPath) {
+        currentFilePath = message.newPath;
+      }
+      break;
+  }
+}
+
+// ── Emoji header ──────────────────────────────────────────────────────────────
+
+function updateEmojiHeader(content: string): void {
+  const h1 = content.match(/^#[ \t]+(.+)$/m);
+  if (!h1) { pageEmojiEl.style.display = "none"; return; }
+
+  const title = h1[1].trim();
+  const emojiMatch = title.match(
+    /^(\p{Extended_Pictographic}(?:\uFE0F|\u20E3)?(?:\u200D\p{Extended_Pictographic}(?:\uFE0F|\u20E3)?)*)/u
+  );
+  if (emojiMatch) {
+    pageEmojiEl.textContent = emojiMatch[1];
+    pageEmojiEl.style.display = "block";
+  } else {
+    pageEmojiEl.style.display = "none";
   }
 }
 
