@@ -2,7 +2,7 @@
  * Always-on rendered table widgets with editable cells, add/delete row & column,
  * and draggable column resize stored as:  <!-- col-widths: 40% 35% 25% -->
  */
-import { StateField, EditorState, RangeSetBuilder } from "@codemirror/state";
+import { StateField, EditorState, RangeSetBuilder, type ChangeSpec } from "@codemirror/state";
 import { DecorationSet, Decoration, WidgetType, EditorView } from "@codemirror/view";
 import { syntaxTree } from "@codemirror/language";
 
@@ -224,7 +224,7 @@ function buildColDelRow(
         alignments: cur.alignments.filter((_, i) => i !== col),
       };
       const ws = widths.length === parsed.headers.length ? removeColWidth(widths.map(parseFloat), col) : null;
-      const changes: object[] = ws && commentFrom >= 0
+      const changes: ChangeSpec[] = ws && commentFrom >= 0
         ? [{ from: commentFrom, to: commentTo, insert: buildWidthComment(ws) }, { from, to, insert: reconstructTable(newParsed) }]
         : [{ from, to, insert: reconstructTable(newParsed) }];
       view.dispatch({ changes });
@@ -330,7 +330,7 @@ function buildAddColBtn(
     const newParsed = { ...cur, headers: [...cur.headers, ""], sepCells: [...cur.sepCells, "---"],
       rows: cur.rows.map((r) => [...r, ""]), alignments: [...cur.alignments, "left"] };
     const ws = widths.length === parsed.headers.length ? addColWidth(widths.map(parseFloat)) : null;
-    const changes: object[] = ws && commentFrom >= 0
+    const changes: ChangeSpec[] = ws && commentFrom >= 0
       ? [{ from: commentFrom, to: commentTo, insert: buildWidthComment(ws) }, { from, to, insert: reconstructTable(newParsed) }]
       : [{ from, to, insert: reconstructTable(newParsed) }];
     view.dispatch({ changes });

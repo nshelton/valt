@@ -129,13 +129,21 @@ export class ValtTreeProvider
     });
   }
 
-  private directoryContainsMarkdown(dir: string): boolean {
+  private static readonly EXCLUDED_DIRS = new Set([
+    "node_modules", "dist", "__pycache__", ".next", ".cache",
+  ]);
+
+  private directoryContainsMarkdown(dir: string, depth = 0): boolean {
+    if (depth > 5) return false;
     try {
       const entries = fs.readdirSync(dir, { withFileTypes: true });
       return entries.some(
         (e) =>
           (e.isFile() && e.name.endsWith(".md")) ||
-          (e.isDirectory() && this.directoryContainsMarkdown(path.join(dir, e.name)))
+          (e.isDirectory() &&
+            !e.name.startsWith(".") &&
+            !ValtTreeProvider.EXCLUDED_DIRS.has(e.name) &&
+            this.directoryContainsMarkdown(path.join(dir, e.name), depth + 1))
       );
     } catch {
       return false;

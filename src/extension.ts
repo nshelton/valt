@@ -10,6 +10,8 @@ let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 const pageIndex = new PageIndex();
+let webviewReady = false;
+let pendingFilePath: string | null = null;
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = getWorkspaceRoot();
@@ -35,7 +37,11 @@ export function activate(context: vscode.ExtensionContext): void {
     "valt.openFile",
     (filePath: string) => {
       openValtPanel(context);
-      setTimeout(() => sendFileToWebview(filePath), 100);
+      if (webviewReady) {
+        sendFileToWebview(filePath);
+      } else {
+        pendingFilePath = filePath;
+      }
     }
   );
 
@@ -59,10 +65,21 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Watch for external file changes (git checkout, other tools)
+  const mdWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
+  let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
+  const debouncedRebuild = () => {
+    if (rebuildTimer) clearTimeout(rebuildTimer);
+    rebuildTimer = setTimeout(() => rebuildIndexes(), 500);
+  };
+  mdWatcher.onDidCreate(debouncedRebuild);
+  mdWatcher.onDidDelete(debouncedRebuild);
+  mdWatcher.onDidChange(debouncedRebuild);
+
   context.subscriptions.push(
     fileTreeView, tagTreeView,
     openCmd, openFileCmd, refreshCmd, setTagColorCmd,
-    cfgWatcher,
+    cfgWatcher, mdWatcher,
   );
 
   // Build indexes eagerly so trees are populated before a file is opened
@@ -103,6 +120,8 @@ function openValtPanel(context: vscode.ExtensionContext): void {
 
   panel.onDidDispose(() => {
     panel = undefined;
+    webviewReady = false;
+    pendingFilePath = null;
   }, undefined, context.subscriptions);
 }
 
@@ -149,8 +168,13 @@ function buildWebviewHtml(
 function handleWebviewMessage(message: WebviewMessage): void {
   switch (message.type) {
     case "ready":
+      webviewReady = true;
       sendFileIndex();
       sendTagIndex();
+      if (pendingFilePath) {
+        sendFileToWebview(pendingFilePath);
+        pendingFilePath = null;
+      }
       break;
     case "requestFile":
       handleRequestFile(message.path);
@@ -296,12 +320,22 @@ async function rebuildIndexes(): Promise<void> {
   const tagIdx: TagIndex = new Map();
   const pageFiles: { fsPath: string; content: string }[] = [];
 
-  for (const uri of uris) {
-    try {
-      const content = fs.readFileSync(uri.fsPath, "utf8");
-      buildTagIndexFromContent(uri.fsPath, content, tagIdx);
-      pageFiles.push({ fsPath: uri.fsPath, content });
-    } catch { /* skip unreadable files */ }
+  // Read files in parallel batches to avoid blocking the extension host
+  const BATCH_SIZE = 50;
+  for (let i = 0; i < uris.length; i += BATCH_SIZE) {
+    const batch = uris.slice(i, i + BATCH_SIZE);
+    const results = await Promise.allSettled(
+      batch.map(async (uri) => {
+        const bytes = await vscode.workspace.fs.readFile(uri);
+        return { fsPath: uri.fsPath, content: Buffer.from(bytes).toString("utf8") };
+      })
+    );
+    for (const result of results) {
+      if (result.status === "fulfilled") {
+        buildTagIndexFromContent(result.value.fsPath, result.value.content, tagIdx);
+        pageFiles.push(result.value);
+      }
+    }
   }
 
   tagTreeProvider?.setIndex(tagIdx);
