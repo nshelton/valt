@@ -137,11 +137,13 @@ window.addEventListener("message", (event: MessageEvent) => {
 
 function handleExtensionMessage(message: ExtensionMessage): void {
   switch (message.type) {
-    case "openFile":
+    case "openFile": {
+      const isSameFile = currentFilePath === message.path;
       currentFilePath = message.path;
-      showDocument(message.content);
+      showDocument(message.content, isSameFile);
       updateEmojiHeader(message.content);
       break;
+    }
     case "fileIndex":
       pageList = message.pages;
       pageProvider.setPages(message.pages);
@@ -177,12 +179,12 @@ function updateEmojiHeader(content: string): void {
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
-function showDocument(content: string): void {
+function showDocument(content: string, sameFile = false): void {
   welcomeEl.style.display  = "none";
   editorRoot.style.display = "block";
 
-  if (editorView) {
-    // Replace content without losing undo history if same file
+  if (editorView && sameFile) {
+    // Same file (e.g. external edit): patch content in-place to preserve undo history.
     const currentContent = editorView.state.doc.toString();
     if (currentContent !== content) {
       editorView.dispatch({
@@ -190,6 +192,8 @@ function showDocument(content: string): void {
       });
     }
   } else {
+    // Different file: fresh editor state so undo history doesn't bleed across files.
+    // createEditor() destroys the old view and resets cursor/scroll to position 0.
     createEditor(content);
   }
 

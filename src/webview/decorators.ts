@@ -49,12 +49,14 @@ class DecoratorWidget extends WidgetType {
 function buildDecorations(view: EditorView, providers: DecoratorProvider[]): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const { from: curFrom, to: curTo } = view.state.selection.main;
+  // One regex instance per call; reset lastIndex per line rather than allocating per line.
+  const re = new RegExp(DECORATOR_PATTERN.source, "g");
 
   for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
     let pos = rangeFrom;
     while (pos <= rangeTo) {
       const line = view.state.doc.lineAt(pos);
-      const re = new RegExp(DECORATOR_PATTERN.source, "g");
+      re.lastIndex = 0;
       let match: RegExpExecArray | null;
 
       while ((match = re.exec(line.text)) !== null) {
@@ -185,18 +187,24 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   if (!update.docChanged) return;
   if (update.transactions.some((tr) => tr.annotation(nowReplacedAnnotation))) return;
 
-  const text = update.state.doc.toString();
   const cursor = update.state.selection.main.head;
   const re = /@now\b/g;
   const changes: { from: number; to: number; insert: string }[] = [];
-  let m: RegExpExecArray | null;
 
-  while ((m = re.exec(text)) !== null) {
-    const from = m.index;
-    const to = from + m[0].length;
-    // Replace only once cursor has moved past the token (user finished typing it)
-    if (cursor < from || cursor > to) {
-      changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+  // Only scan lines touched by this transaction — avoids stringifying the whole doc.
+  for (const { fromB, toB } of update.changedRanges) {
+    const lineFrom = update.state.doc.lineAt(fromB).from;
+    const lineTo   = update.state.doc.lineAt(Math.min(toB, update.state.doc.length - 1)).to;
+    const text     = update.state.doc.sliceString(lineFrom, lineTo);
+    re.lastIndex   = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const from = lineFrom + m.index;
+      const to   = from + m[0].length;
+      // Replace only once cursor has moved past the token (user finished typing it)
+      if (cursor < from || cursor > to) {
+        changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+      }
     }
   }
 
