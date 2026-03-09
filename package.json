@@ -6,7 +6,9 @@
   "engines": {
     "vscode": "^1.85.0"
   },
-  "categories": ["Other"],
+  "categories": [
+    "Other"
+  ],
   "main": "./dist/extension.js",
   "contributes": {
     "commands": [
@@ -23,6 +25,10 @@
         "command": "valt.refreshTree",
         "title": "Valt: Refresh File Tree",
         "icon": "$(refresh)"
+      },
+      {
+        "command": "valt.setTagColor",
+        "title": "Set Tag Color"
       }
     ],
     "viewsContainers": {
@@ -39,6 +45,10 @@
         {
           "id": "valt.fileTree",
           "name": "Files"
+        },
+        {
+          "id": "valt.tagTree",
+          "name": "Tags"
         }
       ]
     },
@@ -49,7 +59,27 @@
           "when": "view == valt.fileTree",
           "group": "navigation"
         }
+      ],
+      "view/item/context": [
+        {
+          "command": "valt.setTagColor",
+          "when": "view == valt.tagTree && viewItem == tag",
+          "group": "inline"
+        }
       ]
+    },
+    "configuration": {
+      "title": "Valt",
+      "properties": {
+        "valt.tagColors": {
+          "type": "object",
+          "description": "Custom hex colors for @tag decorators, keyed by tag name.",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "default": {}
+        }
+      }
     }
   },
   "scripts": {
@@ -64,7 +94,17 @@
     "typescript": "^5.3.0"
   },
   "dependencies": {
-    "marked": "^12.0.0",
-    "highlight.js": "^11.9.0"
+    "@codemirror/autocomplete": "^6.20.1",
+    "@codemirror/commands": "^6.10.2",
+    "@codemirror/lang-markdown": "^6.5.0",
+    "@codemirror/language": "^6.12.2",
+    "@codemirror/language-data": "^6.5.2",
+    "@codemirror/search": "^6.6.0",
+    "@codemirror/state": "^6.5.4",
+    "@codemirror/view": "^6.39.16",
+    "@emoji-mart/data": "^1.2.1",
+    "chrono-node": "^2.9.0",
+    "codemirror": "^6.0.2",
+    "emoji-mart": "^5.6.0"
   }
 }

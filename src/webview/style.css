@@ -22,8 +22,6 @@
   --yellow:       #d4a843;
   --red:          #d46a6a;
   --purple:       #a07dd8;
-  --tag-bg:       #2a3540;
-  --tag-text:     #7ab8e8;
   --radius:       5px;
   --font-body:    -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
   --font-mono:    "JetBrains Mono", "Fira Code", "Cascadia Code", "Menlo", "Monaco", "Consolas", monospace;
@@ -33,12 +31,10 @@ html, body {
   height: 100%;
   background: var(--bg);
   color: var(--text);
-  /* VSCode injects --vscode-editor-font-family from the user's editor settings. */
   font-family: var(--vscode-editor-font-family, var(--font-body));
   font-size: 15px;
   line-height: 1.7;
   -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
 }
 
 /* ── Layout shell ─────────────────────────────────────────────────────────── */
@@ -53,7 +49,6 @@ html, body {
   flex: 1;
   overflow-y: auto;
   padding: 48px 32px;
-  scroll-behavior: smooth;
 }
 
 /* ── Welcome screen ───────────────────────────────────────────────────────── */
@@ -73,250 +68,374 @@ html, body {
   margin-bottom: 12px;
 }
 
-/* ── Document container ───────────────────────────────────────────────────── */
+/* ── Page emoji header ────────────────────────────────────────────────────── */
 
-#document {
+#page-emoji {
+  font-size: 4rem;
+  line-height: 1;
+  margin-bottom: 8px;
+  user-select: none;
+  /* Sit in the same column flow as the editor */
   max-width: 680px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+/* ── CodeMirror container ─────────────────────────────────────────────────── */
+
+#editor-root {
+  /* max-width: 680px; */
   margin: 0 auto;
   padding-bottom: 80px;
 }
 
-/* ── Typography ───────────────────────────────────────────────────────────── */
+/* ── CodeMirror theme overrides ───────────────────────────────────────────── */
 
-#document h1,
-#document h2,
-#document h3,
-#document h4,
-#document h5,
-#document h6 {
-  font-weight: 600;
-  line-height: 1.3;
-  letter-spacing: -0.02em;
-  color: #f0f0f0;
-  margin-top: 2em;
-  margin-bottom: 0.5em;
+.cm-editor {
+  background: transparent !important;
+  font-family: var(--vscode-editor-font-family, var(--font-body));
+  font-size: 15px;
+  line-height: 1.7;
 }
 
-#document h1 { font-size: 2rem;   margin-top: 0; }
-#document h2 { font-size: 1.4rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-#document h3 { font-size: 1.15rem; }
-#document h4 { font-size: 1rem; }
-#document h5 { font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.06em; color: var(--text-muted); }
-#document h6 { font-size: 0.85rem; color: var(--text-muted); }
-
-#document p {
-  margin-bottom: 1em;
+.cm-editor .cm-scroller {
+  overflow: visible;
 }
 
-#document a {
-  color: var(--accent);
-  text-decoration: none;
-  border-bottom: 1px solid transparent;
-  transition: border-color 0.15s, color 0.15s;
+.cm-editor .cm-content {
+  caret-color: var(--accent);
+  padding: 0;
 }
 
-#document a:hover {
-  color: var(--accent-hover);
-  border-bottom-color: var(--accent-hover);
+.cm-editor .cm-line {
+  padding: 0 2px;
 }
 
-#document strong { font-weight: 600; color: #f0f0f0; }
-#document em     { font-style: italic; color: #c8c8c8; }
-
-#document ul,
-#document ol {
-  margin: 0 0 1em 1.5em;
+.cm-editor.cm-focused {
+  outline: none !important;
 }
 
-#document li {
-  margin-bottom: 0.25em;
+/* ── Gutters (hidden for clean look) ──────────────────────────────────────── */
+
+.cm-editor .cm-gutters {
+  display: none;
 }
 
-#document li > ul,
-#document li > ol {
-  margin-top: 0.25em;
-  margin-bottom: 0;
+/* ── Selection ────────────────────────────────────────────────────────────── */
+
+.cm-editor .cm-selectionBackground {
+  background: #264f78 !important;
 }
 
-#document hr {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 2em 0;
+.cm-editor.cm-focused .cm-selectionBackground {
+  background: #264f78 !important;
 }
 
-/* ── Blockquote ───────────────────────────────────────────────────────────── */
+/* ── Cursor ───────────────────────────────────────────────────────────────── */
 
-#document blockquote {
-  border-left: 3px solid var(--border-focus);
-  margin: 1.25em 0;
-  padding: 0.5em 1em;
-  color: var(--text-muted);
-  background: var(--bg-elevated);
-  border-radius: 0 var(--radius) var(--radius) 0;
+.cm-editor .cm-cursor {
+  border-left-color: var(--accent);
 }
 
-#document blockquote p {
-  margin: 0;
-}
+/* ── Markdown heading sizes ───────────────────────────────────────────────── */
+
+.cm-heading-1 { font-size: 2rem;    font-weight: 600; letter-spacing: -0.02em; color: #f0f0f0; }
+.cm-heading-2 { font-size: 1.4rem;  font-weight: 600; letter-spacing: -0.02em; color: #f0f0f0; }
+.cm-heading-3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; color: #f0f0f0; }
+.cm-heading-4 { font-size: 1rem;    font-weight: 600; letter-spacing: -0.02em; color: #f0f0f0; }
+.cm-heading-5 { font-size: 0.9rem;  font-weight: 600; letter-spacing: 0.06em; color: var(--text-muted); text-transform: uppercase; }
+.cm-heading-6 { font-size: 0.85rem; font-weight: 400; color: var(--text-muted); }
+
+/* ── Markdown syntax tokens ───────────────────────────────────────────────── */
+
+.cm-editor .tok-heading { color: #f0f0f0; font-weight: 600; }
+.cm-editor .tok-meta     { color: var(--text-faint); }
+.cm-editor .tok-emphasis  { font-style: italic; color: #c8c8c8; }
+.cm-editor .tok-strong    { font-weight: 600; color: #f0f0f0; }
+.cm-editor .tok-strikethrough { text-decoration: line-through; color: var(--text-muted); }
+.cm-editor .tok-link      { color: var(--accent); text-decoration: none; }
+.cm-editor .tok-url       { color: var(--text-faint); }
+.cm-editor .tok-monospace { font-family: var(--font-mono); }
 
 /* ── Inline code ──────────────────────────────────────────────────────────── */
 
-#document code {
+.cm-editor .tok-monospace:not(.tok-meta) {
   font-family: var(--font-mono);
-  font-size: 0.85em;
+  font-size: 0.88em;
   background: var(--bg-inline);
   border: 1px solid var(--border);
   border-radius: 3px;
-  padding: 0.1em 0.4em;
+  padding: 0.05em 0.3em;
   color: #d9a0a0;
 }
 
 /* ── Code blocks ──────────────────────────────────────────────────────────── */
 
-#document pre {
-  background: var(--bg-code);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  overflow-x: auto;
-  margin: 1.25em 0;
-  padding: 1em 1.2em;
-  position: relative;
-}
-
-#document pre code {
+.cm-editor .cm-line.cm-codeblock {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background: none;
-  border: none;
-  padding: 0;
-  color: inherit;
-  line-height: 1.6;
-}
-
-/* ── Images ───────────────────────────────────────────────────────────────── */
-
-#document img {
-  max-width: 100%;
-  height: auto;
-  border-radius: var(--radius);
-  border: 1px solid var(--border);
-  margin: 0.5em 0;
-  display: block;
-}
-
-/* ── Tables ───────────────────────────────────────────────────────────────── */
-
-#document table {
-  width: 100%;
-  border-collapse: collapse;
-  margin: 1.25em 0;
-  font-size: 0.92em;
-}
-
-#document th,
-#document td {
-  border: 1px solid var(--border);
-  padding: 0.5em 0.8em;
-  text-align: left;
-}
-
-#document th {
-  background: var(--bg-elevated);
-  font-weight: 600;
-  color: #f0f0f0;
-}
-
-#document tr:nth-child(even) td {
-  background: var(--bg-elevated);
-}
-
-/* ── Task lists ───────────────────────────────────────────────────────────── */
-
-#document input[type="checkbox"] {
-  margin-right: 0.5em;
-  accent-color: var(--accent);
-}
-
-/* ── Decorator pills ──────────────────────────────────────────────────────── */
-
-.valt-datetime {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border);
-  border-radius: 20px;
-  padding: 1px 10px;
-  font-size: 0.78em;
-  font-family: var(--font-mono);
+  background: var(--bg-code);
   color: var(--text-muted);
-  vertical-align: middle;
 }
 
-.valt-tag {
-  display: inline-flex;
-  align-items: center;
-  background: var(--tag-bg);
-  color: var(--tag-text);
-  border-radius: 20px;
-  padding: 1px 9px;
-  font-size: 0.78em;
-  font-weight: 500;
-  vertical-align: middle;
-  cursor: default;
+/* ── Blockquote ───────────────────────────────────────────────────────────── */
+
+.cm-editor .tok-quote {
+  color: var(--text-muted);
 }
 
+/* ── Lists ────────────────────────────────────────────────────────────────── */
 
-.valt-status {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  border-radius: 20px;
-  padding: 1px 10px;
-  font-size: 0.78em;
+.cm-editor .tok-list {
+  color: var(--text-faint);
+}
+
+/* ── Highlight.js-style syntax highlighting for fenced code ───────────────── */
+
+.cm-editor .tok-keyword     { color: #c792ea; }
+.cm-editor .tok-string      { color: #c3e88d; }
+.cm-editor .tok-number      { color: #f78c6c; }
+.cm-editor .tok-comment     { color: #546e7a; font-style: italic; }
+.cm-editor .tok-variableName { color: #f07178; }
+.cm-editor .tok-typeName    { color: #ffcb6b; }
+.cm-editor .tok-operator    { color: #89ddff; }
+.cm-editor .tok-propertyName { color: #82aaff; }
+
+/* ── Table widget ─────────────────────────────────────────────────────────── */
+
+.cm-table-wrap {
+  display: flex;
+  align-items: flex-start;
+  margin: 0.5em 0;
+}
+
+.cm-table-scroll {
+  overflow-x: auto;
+  flex: 1;
+  min-width: 0;
+}
+
+.cm-table-widget {
+  border-collapse: collapse;
+  font-size: 0.9em;
+  width: 100%;
+  table-layout: fixed;
+}
+
+.cm-table-widget th,
+.cm-table-widget td {
+  border: 1px solid var(--border);
+  padding: 6px 12px;
+  text-align: left;
+  vertical-align: top;
+  overflow: hidden;
+  word-break: break-word;
+}
+
+.cm-table-widget th {
+  background: var(--bg-elevated);
+  color: var(--text);
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  vertical-align: middle;
 }
 
-.valt-status[data-status="draft"]  { background: #2a2a1e; color: var(--yellow); border: 1px solid #3a3a20; }
-.valt-status[data-status="active"] { background: #1a2a1a; color: var(--green);  border: 1px solid #1e3a1e; }
-.valt-status[data-status="done"]   { background: #1a1a2a; color: var(--purple); border: 1px solid #22224a; }
+.cm-table-widget td {
+  color: var(--text);
+}
 
-.valt-status::before { content: "●"; font-size: 0.7em; }
+.cm-table-widget tbody tr:nth-child(even) td {
+  background: rgba(255, 255, 255, 0.02);
+}
 
-.valt-wikilink {
+/* Subtle focus on body cells */
+.cm-table-widget td:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(111, 163, 216, 0.35);
+  background: rgba(111, 163, 216, 0.05);
+}
+
+/* Header cell wrapper — contains editable div + resize handle */
+.cm-th-wrap {
+  position: relative;
+  padding: 0 !important;
+  background: var(--bg-elevated);
+  overflow: visible !important;
+}
+
+.cm-th-content {
+  padding: 6px 12px;
+  min-height: 1.4em;
+  word-break: break-word;
+}
+
+.cm-th-content:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 1px rgba(111, 163, 216, 0.35);
+  background: rgba(111, 163, 216, 0.05);
+}
+
+/* Column resize handle */
+.cm-col-resize {
+  position: absolute;
+  top: 0;
+  right: -4px;
+  width: 8px;
+  height: 100%;
+  cursor: col-resize;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.cm-col-resize::after {
+  content: '';
+  display: block;
+  width: 2px;
+  height: 50%;
+  background: transparent;
+  border-radius: 1px;
+  transition: background 0.15s, height 0.15s;
+}
+
+.cm-table-wrap:hover .cm-col-resize::after {
+  background: var(--border-focus);
+}
+
+.cm-col-resize:hover::after,
+.cm-col-resize.active::after {
+  background: var(--accent);
+  height: 70%;
+}
+
+/* Delete column row (above headers) */
+.cm-col-del-row th {
+  border: none !important;
+  background: none !important;
+  padding: 1px 2px !important;
+  height: 16px;
+  font-weight: normal;
+}
+
+/* Delete row gutter (left of tbody rows) */
+.cm-row-del-cell {
+  width: 16px;
+  padding: 0 !important;
+  border: none !important;
+  background: none !important;
+}
+
+/* Shared delete button style */
+.cm-table-del-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  cursor: pointer;
+  font-size: 0.8em;
+  line-height: 1;
+  color: transparent;
+  transition: color 0.15s, background 0.15s;
+  user-select: none;
+}
+
+tr:hover .cm-row-del-cell .cm-table-del-btn {
+  color: var(--text-faint);
+}
+
+.cm-col-hovered .cm-table-del-btn {
+  color: var(--text-faint);
+}
+
+.cm-table-del-btn:hover {
+  color: var(--red) !important;
+  background: rgba(212, 106, 106, 0.12);
+}
+
+/* Add row button (tfoot cell) */
+.cm-table-add-row {
+  text-align: center;
+  padding: 4px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.85em;
+  border: 1px dashed transparent !important;
+  border-top: none !important;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.cm-table-wrap:hover .cm-table-add-row {
+  opacity: 1;
+}
+
+.cm-table-add-row:hover {
+  color: var(--accent);
+  border-color: var(--border) !important;
+}
+
+/* Add column button (right of table) */
+.cm-table-add-col {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  color: var(--text-faint);
+  cursor: pointer;
+  font-size: 0.9em;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+  user-select: none;
+}
+
+.cm-table-wrap:hover .cm-table-add-col {
+  opacity: 1;
+}
+
+.cm-table-add-col:hover {
+  color: var(--accent);
+}
+
+/* ── @decorator styles ────────────────────────────────────────────────────── */
+
+.cm-decorator-file {
   color: var(--accent);
   cursor: pointer;
-  border-bottom: 1px dashed var(--accent);
-  text-decoration: none;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
-.valt-wikilink:hover {
-  color: var(--accent-hover);
-  border-bottom-color: var(--accent-hover);
+.cm-decorator-file:hover { color: var(--accent-hover); }
+
+.cm-decorator {
+  display: inline-block;
+  font-family: var(--font-mono);
+  font-size: 0.82em;
+  border-radius: 3px;
+  padding: 0.1em 0.4em;
+  line-height: 1.4;
+  vertical-align: middle;
+  user-select: none;
 }
 
-/* ── Highlight.js theme (dark, minimal) ───────────────────────────────────── */
+.cm-decorator-now {
+  color: var(--green);
+  background: rgba(106, 191, 105, 0.12);
+  border: 1px solid rgba(106, 191, 105, 0.25);
+}
 
-.hljs-keyword,
-.hljs-selector-tag,
-.hljs-built_in       { color: #c792ea; }
-.hljs-string,
-.hljs-attr           { color: #c3e88d; }
-.hljs-number,
-.hljs-literal        { color: #f78c6c; }
-.hljs-comment        { color: #546e7a; font-style: italic; }
-.hljs-function,
-.hljs-title          { color: #82aaff; }
-.hljs-variable,
-.hljs-name           { color: #f07178; }
-.hljs-type,
-.hljs-class          { color: #ffcb6b; }
-.hljs-operator,
-.hljs-punctuation    { color: #89ddff; }
-.hljs-meta           { color: #888888; }
+/* Tag is a mark decoration (inline text), not a replace widget.
+   Styling persists even while the cursor is inside and the user is editing. */
+.cm-decorator-tag {
+  color: var(--purple);
+  background: rgba(160, 125, 216, 0.12);
+  border: 1px solid rgba(160, 125, 216, 0.25);
+  border-radius: 3px;
+  padding: 0 0.35em;
+}
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 
@@ -329,266 +448,57 @@ html, body {
 
 ::selection { background: #264f78; color: #ffffff; }
 
-/* ── Stub render (Step 1 fallback) ───────────────────────────────────────── */
+/* ── Active line ──────────────────────────────────────────────────────────── */
 
-pre.stub-render {
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  white-space: pre-wrap;
-  word-break: break-word;
-  color: var(--text-muted);
-}
-
-/* ── Block layout ─────────────────────────────────────────────────────────── */
-
-.valt-block {
-  border-radius: var(--radius);
-  padding: 2px 6px;
-  margin: 0 -6px;
-  transition: background-color 0.1s;
-  position: relative;
-}
-
-.valt-block::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  top: 4px;
-  bottom: 4px;
-  width: 2px;
-  background: transparent;
-  border-radius: 1px;
-  transition: background 0.15s;
-  pointer-events: none;
-}
-
-.valt-block:hover::before {
-  background: var(--border-focus);
-}
-
-.valt-block:hover {
+.cm-editor .cm-activeLine {
   background: rgba(255, 255, 255, 0.025);
 }
 
-.valt-block + .valt-block {
-  margin-top: 0.75em;
-}
+/* ── Horizontal rule ──────────────────────────────────────────────────────── */
 
-/* ── Drag-over indicators ─────────────────────────────────────────────────── */
-
-.valt-block.drag-over-above::after,
-.valt-block.drag-over-below::after {
-  content: '';
-  position: absolute;
-  left: -6px;
-  right: -6px;
-  height: 2px;
-  background: var(--accent);
-  border-radius: 1px;
-  pointer-events: none;
-}
-
-.valt-block.drag-over-above::after { top: -3px; }
-.valt-block.drag-over-below::after { bottom: -3px; }
-
-/* ── Block drag handle ────────────────────────────────────────────────────── */
-
-.valt-block-handle {
-  position: absolute;
-  left: -20px;
-  top: 50%;
-  transform: translateY(-50%);
-  width: 16px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  cursor: grab;
-  opacity: 0;
-  color: var(--text-faint);
-  font-size: 13px;
-  transition: opacity 0.15s;
-  user-select: none;
-}
-
-.valt-block:hover .valt-block-handle { opacity: 1; }
-.valt-block-handle:active { cursor: grabbing; }
-
-/* ── Block context menu ───────────────────────────────────────────────────── */
-
-.valt-context-menu {
-  position: fixed;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-focus);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
-  z-index: 20000;
-  min-width: 200px;
-  padding: 4px 0;
-}
-
-.valt-context-menu-debug {
-  padding: 6px 14px;
-  font-size: 0.72em;
-  font-family: var(--font-mono);
-  color: var(--text-faint);
-  line-height: 1.6;
-  white-space: pre;
-}
-
-.valt-context-menu-sep {
-  border: none;
-  border-top: 1px solid var(--border);
-  margin: 4px 0;
-}
-
-.valt-context-menu-item {
-  padding: 6px 14px;
-  font-size: 0.875em;
-  cursor: pointer;
-  color: var(--text-muted);
-  user-select: none;
-}
-
-.valt-context-menu-item:hover { background: rgba(111, 163, 216, 0.12); color: var(--text); }
-.valt-context-menu-item.danger { color: var(--red); }
-.valt-context-menu-item.danger:hover { background: rgba(212, 106, 106, 0.12); }
-
-/* ── Contenteditable block editor ────────────────────────────────────────── */
-
-.valt-block-editor {
+.cm-hr-line {
   display: block;
-  width: 100%;
-  outline: none;
-  cursor: text;
-  white-space: pre-wrap;
-  word-wrap: break-word;
-  caret-color: var(--accent);
-  line-height: 1.7;
+  text-align: center;
+  color: var(--border-focus);
 }
 
-/* ── Heading editors ─────────────────────────────────────────────────────── */
+/* ── Search panel styling ─────────────────────────────────────────────────── */
 
-.valt-editor-h1 { font-size: 2rem;    font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
-.valt-editor-h2 { font-size: 1.4rem;  font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; border-bottom: 1px solid var(--border); padding-bottom: 0.3em; }
-.valt-editor-h3 { font-size: 1.15rem; font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
-.valt-editor-h4 { font-size: 1rem;    font-weight: 600; letter-spacing: -0.02em; line-height: 1.3; color: #f0f0f0; }
-.valt-editor-h5 { font-size: 0.9rem;  font-weight: 600; letter-spacing: 0.06em;  line-height: 1.3; color: var(--text-muted); text-transform: uppercase; }
-.valt-editor-h6 { font-size: 0.85rem; font-weight: 400; line-height: 1.3; color: var(--text-muted); }
-
-/* ── Code block editor ───────────────────────────────────────────────────── */
-
-.valt-editor-code {
-  font-family: var(--font-mono);
-  font-size: 0.85em;
-  background: var(--bg-code);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 1em 1.2em;
-  color: var(--text-muted);
-  line-height: 1.6;
-}
-
-/* ── Blockquote editor ───────────────────────────────────────────────────── */
-
-.valt-editor-blockquote {
-  border-left: 3px solid var(--border-focus);
-  padding: 0.5em 1em;
-  color: var(--text-muted);
+.cm-editor .cm-panels {
   background: var(--bg-elevated);
-  border-radius: 0 var(--radius) var(--radius) 0;
+  border-bottom: 1px solid var(--border);
 }
 
-/* ── List editor ─────────────────────────────────────────────────────────── */
-
-.valt-editor-list { line-height: 1.8; }
-
-/* ── Inline syntax markers ───────────────────────────────────────────────── */
-
-/* Hidden by default — opacity:0 keeps them in textContent/innerText */
-.md-syn {
-  opacity: 0;
-  color: var(--text-faint);
-  font-weight: inherit;
-  font-style: inherit;
-  font-size: inherit;
-  font-family: inherit;
-  user-select: text;
+.cm-editor .cm-searchMatch {
+  background: rgba(111, 163, 216, 0.3);
 }
 
-/* Reveal markers when cursor is inside the formatted element */
-strong.cursor-here > .md-syn,
-em.cursor-here > .md-syn,
-code.cursor-here > .md-syn,
-s.cursor-here > .md-syn,
-a.cursor-here > .md-syn { opacity: 0.45; }
-
-/* Heading # markers: faint always, slightly brighter on focus */
-.md-heading-marker { opacity: 0.18; transition: opacity 0.08s; }
-.valt-block-editor:focus .md-heading-marker { opacity: 0.4; }
-
-/* Blockquote > markers */
-.md-blockquote-marker { opacity: 0.25; }
-.valt-block-editor:focus .md-blockquote-marker { opacity: 0.45; }
-
-/* List - / 1. markers: always visible, muted */
-.md-list-marker { color: var(--text-faint); user-select: text; }
-
-/* ── Inline formatting inside contenteditable ────────────────────────────── */
-
-.valt-block-editor strong { font-weight: 600; color: #f0f0f0; }
-.valt-block-editor em     { font-style: italic; color: #c8c8c8; }
-.valt-block-editor s      { text-decoration: line-through; color: var(--text-muted); }
-.valt-block-editor code   {
-  font-family: var(--font-mono);
-  font-size: 0.88em;
-  background: var(--bg-inline);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  padding: 0.1em 0.35em;
-  color: #d9a0a0;
+.cm-editor .cm-searchMatch-selected {
+  background: rgba(111, 163, 216, 0.5);
 }
 
-/* ── Static (non-editable) blocks ────────────────────────────────────────── */
+/* ── Autocomplete tooltip ─────────────────────────────────────────────────── */
 
-.valt-block-static { cursor: default; }
-
-/* ── Autocomplete dropdown ────────────────────────────────────────────────── */
-
-.valt-autocomplete {
-  position: fixed;
-  background: var(--bg-elevated);
-  border: 1px solid var(--border-focus);
-  border-radius: var(--radius);
-  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.55);
-  z-index: 10000;
-  min-width: 220px;
-  max-height: 256px;
-  overflow-y: auto;
-  padding: 4px 0;
+.cm-tooltip.cm-tooltip-autocomplete {
+  background: var(--bg-elevated) !important;
+  border: 1px solid var(--border) !important;
+  border-radius: var(--radius) !important;
+  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4) !important;
+  font-family: var(--font-body);
+  font-size: 13px;
 }
 
-.valt-autocomplete-item {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 6px 14px;
-  font-size: 0.875em;
-  cursor: pointer;
-  color: var(--text-muted);
-  white-space: nowrap;
-  user-select: none;
+.cm-tooltip-autocomplete ul li {
+  color: var(--text) !important;
+  padding: 4px 10px !important;
 }
 
-.valt-autocomplete-item:hover,
-.valt-autocomplete-item.is-active {
-  background: rgba(111, 163, 216, 0.12);
-  color: var(--text);
+.cm-tooltip-autocomplete ul li[aria-selected] {
+  background: rgba(111, 163, 216, 0.2) !important;
+  color: var(--text) !important;
 }
 
-.valt-autocomplete-kind {
-  margin-left: auto;
-  font-size: 0.75em;
-  opacity: 0.4;
-  font-family: var(--font-mono);
-}
+.cm-completionLabel { color: var(--text); }
+.cm-completionDetail { color: var(--text-muted); font-style: normal; margin-left: 8px; }
+.cm-completionIcon-keyword::after { content: "@"; color: var(--accent); }
+.cm-completionIcon-file::after    { content: "◈"; color: var(--text-muted); }

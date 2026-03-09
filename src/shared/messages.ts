@@ -1,7 +1,15 @@
 /**
- * Typed message bus for all communication between the extension host
- * and the webview. No stringly-typed postMessage calls anywhere else.
+ * Typed message bus — all host↔webview comms go here.
  */
+
+// ── Shared types ──────────────────────────────────────────────────────────────
+
+/** Metadata for one page, sent as part of FileIndexMessage. */
+export interface PageInfo {
+  filename: string;      // "1 Getting Started.md"
+  displayName: string;   // H1 text (no emoji prefix, no numeric ID)
+  emoji: string | null;  // leading emoji from H1, if any
+}
 
 // ── Extension → Webview ──────────────────────────────────────────────────────
 
@@ -9,80 +17,55 @@ export interface OpenFileMessage {
   type: "openFile";
   path: string;
   content: string;
-  /** Webview-safe base URI for resolving relative assets (images, etc.) */
   webviewBaseUri: string;
-  /** Absolute paths of all .md files in the workspace, for autocomplete. */
-  fileList: string[];
 }
 
-export interface FileChangedMessage {
-  type: "fileChanged";
-  path: string;
-  content: string;
-  webviewBaseUri: string;
-  fileList: string[];
+export interface FileIndexMessage {
+  type: "fileIndex";
+  pages: PageInfo[];  // all .md files, sorted by numeric ID then alphabetically
 }
 
-export interface ImageSavedMessage {
-  type: "imageSaved";
-  relativePath: string;
+export interface TagIndexMessage {
+  type: "tagIndex";
+  tags: Record<string, string[]>;   // tagName → filenames of files containing it
+  colors: Record<string, string>;   // tagName → hex color
+}
+
+/** Sent when the currently-open file is renamed due to an H1 heading change. */
+export interface FileRenamedMessage {
+  type: "fileRenamed";
+  oldPath: string;
+  newPath: string;
 }
 
 export type ExtensionMessage =
   | OpenFileMessage
-  | FileChangedMessage
-  | ImageSavedMessage;
+  | FileIndexMessage
+  | TagIndexMessage
+  | FileRenamedMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
-
-export interface RequestFileMessage {
-  type: "requestFile";
-  path: string;
-}
-
-export interface SaveImageMessage {
-  type: "saveImage";
-  /** Base64-encoded PNG bytes */
-  dataBase64: string;
-  /** The path of the currently open document — used to derive save location */
-  currentFilePath: string;
-}
 
 export interface ReadyMessage {
   type: "ready";
 }
 
-export interface UpdateBlockMessage {
-  type: "updateBlock";
-  filePath: string;
-  /** Char offset of the block's start in the source file */
-  start: number;
-  /** Char offset of the block's end in the source file */
-  end: number;
-  /** New raw markdown for this block (must include trailing newlines) */
-  newRaw: string;
+export interface RequestFileMessage {
+  type: "requestFile";
+  /**
+   * Either an absolute filesystem path (for legacy @filename.md links)
+   * or a page display name (for @[Page Name] links, resolved on extension side).
+   */
+  path: string;
 }
 
-export interface DeleteBlockMessage {
-  type: "deleteBlock";
+export interface SaveFileMessage {
+  type: "saveFile";
   filePath: string;
-  start: number;
-  end: number;
-}
-
-export interface MoveBlockMessage {
-  type: "moveBlock";
-  filePath: string;
-  movingStart: number;
-  movingEnd: number;
-  /** The moving block's raw will be inserted at this offset (before any adjustment for removal) */
-  insertAfterOffset: number;
+  content: string;
 }
 
 export type WebviewMessage =
-  | RequestFileMessage
-  | SaveImageMessage
   | ReadyMessage
-  | UpdateBlockMessage
-  | DeleteBlockMessage
-  | MoveBlockMessage;
+  | RequestFileMessage
+  | SaveFileMessage;

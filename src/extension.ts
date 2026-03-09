@@ -2,18 +2,28 @@ import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
+import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
+import { PageIndex, rewriteLinks } from "./pageIndex";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
 let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
+let tagTreeProvider: ValtTagTreeProvider | undefined;
+const pageIndex = new PageIndex();
 
 export function activate(context: vscode.ExtensionContext): void {
   const workspaceRoot = getWorkspaceRoot();
 
-  treeProvider = new ValtTreeProvider(workspaceRoot ?? "");
+  treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
+  tagTreeProvider = new ValtTagTreeProvider();
 
-  const treeView = vscode.window.createTreeView("valt.fileTree", {
+  const fileTreeView = vscode.window.createTreeView("valt.fileTree", {
     treeDataProvider: treeProvider,
+    showCollapseAll: true,
+  });
+
+  const tagTreeView = vscode.window.createTreeView("valt.tagTree", {
+    treeDataProvider: tagTreeProvider,
     showCollapseAll: true,
   });
 
@@ -33,7 +43,30 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider?.refresh();
   });
 
-  context.subscriptions.push(treeView, openCmd, openFileCmd, refreshCmd);
+  const setTagColorCmd = vscode.commands.registerCommand(
+    "valt.setTagColor",
+    async (item?: { tagName?: string }) => {
+      const tagName = item?.tagName;
+      if (!tagName || !tagTreeProvider) return;
+      await tagTreeProvider.promptSetColor(tagName);
+    }
+  );
+
+  // Rebuild tag index when config changes (tag colors updated)
+  const cfgWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
+    if (e.affectsConfiguration("valt.tagColors")) {
+      tagTreeProvider?.refresh();
+    }
+  });
+
+  context.subscriptions.push(
+    fileTreeView, tagTreeView,
+    openCmd, openFileCmd, refreshCmd, setTagColorCmd,
+    cfgWatcher,
+  );
+
+  // Build indexes eagerly so trees are populated before a file is opened
+  rebuildIndexes();
 }
 
 export function deactivate(): void {}
@@ -63,7 +96,7 @@ function openValtPanel(context: vscode.ExtensionContext): void {
   panel.webview.html = buildWebviewHtml(panel.webview, context);
 
   panel.webview.onDidReceiveMessage(
-    (raw: unknown) => handleWebviewMessage(raw as WebviewMessage, context),
+    (raw: unknown) => handleWebviewMessage(raw as WebviewMessage),
     undefined,
     context.subscriptions
   );
@@ -91,18 +124,19 @@ function buildWebviewHtml(
     content="default-src 'none';
              img-src ${webview.cspSource} data: blob:;
              script-src 'nonce-${nonce}';
-             style-src ${webview.cspSource} 'unsafe-inline';" />
+             style-src ${webview.cspSource} 'unsafe-inline';
+             font-src ${webview.cspSource};" />
   <title>Valt</title>
 </head>
 <body>
   <div id="app">
-    <div id="sidebar"></div>
     <div id="content">
       <div id="welcome">
         <h1>Valt</h1>
         <p>Select a file from the sidebar to get started.</p>
       </div>
-      <div id="document" style="display:none;"></div>
+      <div id="page-emoji" style="display:none;"></div>
+      <div id="editor-root" style="display:none;"></div>
     </div>
   </div>
   <script nonce="${nonce}" src="${scriptUri}"></script>
@@ -112,29 +146,40 @@ function buildWebviewHtml(
 
 // ── Message handlers ──────────────────────────────────────────────────────────
 
-function handleWebviewMessage(
-  message: WebviewMessage,
-  context: vscode.ExtensionContext
-): void {
+function handleWebviewMessage(message: WebviewMessage): void {
   switch (message.type) {
     case "ready":
+      sendFileIndex();
+      sendTagIndex();
       break;
     case "requestFile":
-      sendFileToWebview(message.path);
+      handleRequestFile(message.path);
       break;
-    case "saveImage":
-      handleSaveImage(message.dataBase64, message.currentFilePath, context);
-      break;
-    case "updateBlock":
-      handleUpdateBlock(message.filePath, message.start, message.end, message.newRaw);
-      break;
-    case "deleteBlock":
-      handleDeleteBlock(message.filePath, message.start, message.end);
-      break;
-    case "moveBlock":
-      handleMoveBlock(message.filePath, message.movingStart, message.movingEnd, message.insertAfterOffset);
+    case "saveFile":
+      handleSaveFile(message.filePath, message.content);
       break;
   }
+}
+
+function handleRequestFile(pathOrName: string): void {
+  // Absolute path that exists → open directly
+  if (path.isAbsolute(pathOrName) && fs.existsSync(pathOrName)) {
+    sendFileToWebview(pathOrName);
+    return;
+  }
+
+  // Try display-name lookup in page index
+  const entry = pageIndex.getByDisplayName(pathOrName);
+  if (entry) {
+    sendFileToWebview(entry.fsPath);
+    return;
+  }
+
+  // Fallback: search workspace for a file with that basename
+  vscode.workspace.findFiles(`**/${pathOrName}`, "**/node_modules/**").then((uris) => {
+    if (uris.length > 0) sendFileToWebview(uris[0].fsPath);
+    else vscode.window.showWarningMessage(`Valt: Could not find page "${pathOrName}"`);
+  });
 }
 
 function sendFileToWebview(filePath: string): void {
@@ -144,148 +189,145 @@ function sendFileToWebview(filePath: string): void {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
     const webviewBaseUri = panel.webview.asWebviewUri(dirUri).toString();
-    const fileList = collectFileList(getWorkspaceRoot() ?? path.dirname(filePath));
-    const msg: ExtensionMessage = {
-      type: "openFile",
-      path: filePath,
-      content,
-      webviewBaseUri,
-      fileList,
-    };
+    const msg: ExtensionMessage = { type: "openFile", path: filePath, content, webviewBaseUri };
     panel.webview.postMessage(msg);
   } catch {
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
   }
 }
 
-function handleUpdateBlock(
-  filePath: string,
-  start: number,
-  end: number,
-  newRaw: string
-): void {
+function sendFileIndex(): void {
   if (!panel) return;
-
-  try {
-    const original = fs.readFileSync(filePath, "utf8");
-
-    if (start > original.length || end > original.length) {
-      vscode.window.showErrorMessage("Valt: Block offset is stale — please re-open the file.");
-      return;
-    }
-
-    const updated = original.slice(0, start) + newRaw + original.slice(end);
-    fs.writeFileSync(filePath, updated, "utf8");
-    treeProvider?.refresh();
-
-    // Send the freshly written content back so the webview re-renders.
-    sendFileToWebview(filePath);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not update block.");
-  }
+  panel.webview.postMessage({
+    type: "fileIndex",
+    pages: pageIndex.toPageInfos(),
+  } satisfies ExtensionMessage);
 }
 
-function handleDeleteBlock(filePath: string, start: number, end: number): void {
+function sendTagIndex(): void {
   if (!panel) return;
-  try {
-    const original = fs.readFileSync(filePath, "utf8");
-    const updated = original.slice(0, start) + original.slice(end);
-    fs.writeFileSync(filePath, updated, "utf8");
-    treeProvider?.refresh();
-    sendFileToWebview(filePath);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not delete block.");
+  const index = tagTreeProvider ? [...tagTreeProvider["index"].entries()] : [];
+  const tags: Record<string, string[]> = {};
+  const colors: Record<string, string> = {};
+  for (const [tag, files] of index) {
+    tags[tag] = files.map((f) => path.basename(f));
+    if (tagTreeProvider) colors[tag] = tagTreeProvider.colorFor(tag);
   }
+  panel.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
 }
 
-function handleMoveBlock(filePath: string, movingStart: number, movingEnd: number, insertAfterOffset: number): void {
-  if (!panel) return;
+function handleSaveFile(filePath: string, content: string): void {
   try {
-    const original = fs.readFileSync(filePath, "utf8");
-    const movingRaw = original.slice(movingStart, movingEnd);
-    let updated: string;
-    if (insertAfterOffset <= movingStart) {
-      // Moving up: insertAfterOffset is a block's .start, so content before it already ends
-      // with "\n\n" (or is empty). We only need "\n" after movingRaw to create the blank line
-      // that separates it from the block now following it.
-      updated = original.slice(0, insertAfterOffset)
-              + movingRaw + "\n"
-              + original.slice(insertAfterOffset, movingStart)
-              + original.slice(movingEnd);
-    } else {
-      // Moving down: insertAfterOffset is a block's .end, so content before it ends with only
-      // one "\n". We need "\n" before AND after movingRaw to create proper blank-line boundaries.
-      const without = original.slice(0, movingStart) + original.slice(movingEnd);
-      const adjustedOffset = insertAfterOffset - (movingEnd - movingStart);
-      updated = without.slice(0, adjustedOffset)
-              + "\n" + movingRaw + "\n"
-              + without.slice(adjustedOffset);
-    }
-    fs.writeFileSync(filePath, updated, "utf8");
-    treeProvider?.refresh();
-    sendFileToWebview(filePath);
+    fs.writeFileSync(filePath, content, "utf8");
   } catch {
-    vscode.window.showErrorMessage("Valt: Could not move block.");
-  }
-}
-
-function handleSaveImage(
-  dataBase64: string,
-  currentFilePath: string,
-  _context: vscode.ExtensionContext
-): void {
-  if (!panel) return;
-
-  try {
-    const docDir = path.dirname(currentFilePath);
-    const assetsDir = path.join(docDir, "assets");
-
-    if (!fs.existsSync(assetsDir)) {
-      fs.mkdirSync(assetsDir, { recursive: true });
-    }
-
-    const docName = path.basename(currentFilePath, path.extname(currentFilePath));
-    const fileName = `${docName}-${Date.now()}.png`;
-    const absPath = path.join(assetsDir, fileName);
-
-    fs.writeFileSync(absPath, Buffer.from(dataBase64, "base64"));
-
-    const msg: ExtensionMessage = {
-      type: "imageSaved",
-      relativePath: path.join("assets", fileName),
-    };
-    panel.webview.postMessage(msg);
-  } catch {
-    vscode.window.showErrorMessage("Valt: Could not save image.");
-  }
-}
-
-// ── File list ─────────────────────────────────────────────────────────────────
-
-function collectFileList(rootPath: string): string[] {
-  const results: string[] = [];
-  walkForMarkdown(rootPath, results);
-  return results;
-}
-
-function walkForMarkdown(dir: string, results: string[]): void {
-  let entries: fs.Dirent[];
-
-  try {
-    entries = fs.readdirSync(dir, { withFileTypes: true });
-  } catch {
+    vscode.window.showErrorMessage("Valt: Could not save file.");
     return;
   }
 
-  for (const entry of entries) {
-    if (entry.name.startsWith(".")) continue;
-    const fullPath = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      walkForMarkdown(fullPath, results);
-    } else if (entry.isFile() && entry.name.endsWith(".md")) {
-      results.push(fullPath);
+  // Check if a rename is needed (new H1 → new canonical filename)
+  const renameResult = pageIndex.computeRename(filePath, content);
+
+  if (renameResult.needsRename) {
+    const { newPath, newFilename, oldDisplayName } = renameResult;
+
+    // Collect linkers before the rename so we can update their content
+    const linkers = pageIndex.getLinkers(filePath);
+    const newDisplayName = path.basename(newPath, ".md").replace(/^\d+\s+/, "");
+
+    // Rename the file on disk
+    try {
+      fs.renameSync(filePath, newPath);
+    } catch {
+      vscode.window.showErrorMessage(`Valt: Could not rename file to "${newFilename}"`);
+      pageIndex.updateEntry(filePath, content);
+      sendFileIndex();
+      treeProvider?.setPageIndex(pageIndex);
+      treeProvider?.refresh();
+      return;
     }
+
+    // Commit rename in index
+    pageIndex.commitRename(filePath, newPath, content);
+
+    // Update all files that linked to the old display name
+    for (const linkerPath of linkers) {
+      try {
+        const linkerContent = fs.readFileSync(linkerPath, "utf8");
+        const updated = rewriteLinks(linkerContent, oldDisplayName, newDisplayName);
+        if (updated !== linkerContent) {
+          fs.writeFileSync(linkerPath, updated, "utf8");
+          pageIndex.updateEntry(linkerPath, updated);
+        }
+      } catch {
+        // Best-effort link rewrite; skip unreadable files
+      }
+    }
+
+    // Notify webview that the current file was renamed
+    panel?.webview.postMessage({
+      type: "fileRenamed",
+      oldPath: filePath,
+      newPath,
+    } satisfies ExtensionMessage);
   }
+
+  updateTagIndexForFile(renameResult.needsRename ? renameResult.newPath : filePath, content);
+  sendFileIndex();
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
+}
+
+// ── Tag index ─────────────────────────────────────────────────────────────────
+
+function buildTagIndexFromContent(filePath: string, content: string, index: TagIndex): void {
+  const re = /@tag\(([^)]+)\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(content)) !== null) {
+    const tag = m[1].trim();
+    if (!tag) continue;
+    if (!index.has(tag)) index.set(tag, []);
+    const files = index.get(tag)!;
+    if (!files.includes(filePath)) files.push(filePath);
+  }
+}
+
+async function rebuildIndexes(): Promise<void> {
+  const uris = await vscode.workspace.findFiles("**/*.md", "**/node_modules/**");
+  const tagIdx: TagIndex = new Map();
+  const pageFiles: { fsPath: string; content: string }[] = [];
+
+  for (const uri of uris) {
+    try {
+      const content = fs.readFileSync(uri.fsPath, "utf8");
+      buildTagIndexFromContent(uri.fsPath, content, tagIdx);
+      pageFiles.push({ fsPath: uri.fsPath, content });
+    } catch { /* skip unreadable files */ }
+  }
+
+  tagTreeProvider?.setIndex(tagIdx);
+  pageIndex.build(pageFiles);
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
+}
+
+// Keep for incremental tag updates on save
+function updateTagIndexForFile(filePath: string, content: string): void {
+  if (!tagTreeProvider) return;
+  const index: TagIndex = tagTreeProvider["index"];
+
+  // Remove this file from all existing tags
+  for (const files of index.values()) {
+    const i = files.indexOf(filePath);
+    if (i >= 0) files.splice(i, 1);
+  }
+  // Clean up empty tags
+  for (const [tag, files] of index) {
+    if (files.length === 0) index.delete(tag);
+  }
+  // Re-scan and add
+  buildTagIndexFromContent(filePath, content, index);
+  tagTreeProvider.setIndex(index);
+  sendTagIndex();
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
