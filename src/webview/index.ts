@@ -1,19 +1,19 @@
 /**
  * Webview entry point — CodeMirror 6 markdown editor.
  */
-import { EditorView, keymap, highlightActiveLine, drawSelection } from "@codemirror/view";
-import { EditorState } from "@codemirror/state";
+import { EditorView, keymap, highlightActiveLine, drawSelection, ViewPlugin, DecorationSet, Decoration, ViewUpdate } from "@codemirror/view";
+import { EditorState, RangeSetBuilder } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
-import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle } from "@codemirror/language";
+import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
-import { emojiCompletionSource } from "./emojiPlugin";
+import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
 import { componentMenuCompletionSource } from "./componentMenu";
 import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
 import { DateTimeProvider, PageProvider, TagProvider, type PageInfo } from "./decoratorProviders";
@@ -66,6 +66,43 @@ const headingStyles = HighlightStyle.define([
   { tag: tags.heading6, class: "cm-heading-6" },
 ]);
 
+// ── Code block line decoration ────────────────────────────────────────────────
+
+const codeBlockLineDeco = Decoration.line({ class: "cm-codeblock" });
+
+function buildCodeBlockDecos(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  const tree = syntaxTree(view.state);
+  for (const { from, to } of view.visibleRanges) {
+    let pos = from;
+    while (pos <= to) {
+      const line = view.state.doc.lineAt(pos);
+      let node = tree.resolveInner(line.from);
+      while (node) {
+        if (node.name === "FencedCode" || node.name === "CodeBlock") {
+          builder.add(line.from, line.from, codeBlockLineDeco);
+          break;
+        }
+        if (!node.parent) break;
+        node = node.parent;
+      }
+      pos = line.to + 1;
+    }
+  }
+  return builder.finish();
+}
+
+const codeBlockPlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) { this.decorations = buildCodeBlockDecos(view); }
+    update(u: ViewUpdate) {
+      if (u.docChanged || u.viewportChanged) this.decorations = buildCodeBlockDecos(u.view);
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
+
 // ── Save logic ────────────────────────────────────────────────────────────────
 
 function scheduleSave(): void {
@@ -108,7 +145,9 @@ function createEditor(content: string): EditorView {
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       syntaxHighlighting(headingStyles),
       tablePlugin,
+      codeBlockPlugin,
       inlineStylePlugin,
+      emojiSizePlugin,
       ...createDecoratorExtensions(
         providers,
         (msg) => vscode.postMessage(msg),

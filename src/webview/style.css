@@ -159,13 +159,13 @@ html, body {
 
 /* ── Inline code ──────────────────────────────────────────────────────────── */
 
-.cm-editor .tok-monospace:not(.tok-meta) {
+.cm-editor .tok-monospace:not(.tok-processingInstruction) {
   font-family: var(--font-mono);
   font-size: 0.88em;
-  background: var(--bg-inline);
-  border: 1px solid var(--border);
+  background: #2d2d2d;
+  border: 1px solid #3a3a3a;
   border-radius: 3px;
-  padding: 0.05em 0.3em;
+  padding: 0.05em 0.35em;
   color: #d9a0a0;
 }
 
@@ -174,7 +174,9 @@ html, body {
 .cm-editor .cm-line.cm-codeblock {
   font-family: var(--font-mono);
   font-size: 0.85em;
-  background: var(--bg-code);
+  background: #212121;
+  border-left: 2px solid #3a3a3a;
+  padding-left: 12px !important;
   color: var(--text-muted);
 }
 
@@ -397,6 +399,14 @@ tr:hover .cm-row-del-cell .cm-table-del-btn {
 
 .cm-table-add-col:hover {
   color: var(--accent);
+}
+
+/* ── Emoji size ───────────────────────────────────────────────────────────── */
+
+.cm-emoji {
+  font-size: 1.25em;
+  line-height: 1;
+  vertical-align: -0.15em;
 }
 
 /* ── @decorator styles ────────────────────────────────────────────────────── */
