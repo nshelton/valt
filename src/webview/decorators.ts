@@ -60,7 +60,7 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
       re.lastIndex = 0;
       let match: RegExpExecArray | null;
 
-      while ((match = re.exec(line.text)) !== null) {
+      while ((match = DECORATOR_PATTERN.exec(line.text)) !== null) {
         const mFrom = line.from + match.index;
         const mTo = mFrom + match[0].length;
 
@@ -192,11 +192,11 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   if (update.transactions.some((tr) => tr.annotation(nowReplacedAnnotation))) return;
 
   const cursor = update.state.selection.main.head;
-  const re = new RegExp(EPHEMERAL_DATE_RE.source, "g");
   const changes: { from: number; to: number; insert: string }[] = [];
 
   // Only scan lines touched by this transaction — avoids stringifying the whole doc.
-  for (const { fromB, toB } of update.changedRanges) {
+  const re = new RegExp(EPHEMERAL_DATE_RE.source, "g");
+  update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
     const lineFrom = update.state.doc.lineAt(fromB).from;
     const lineTo   = update.state.doc.lineAt(Math.min(toB, update.state.doc.length - 1)).to;
     const text     = update.state.doc.sliceString(lineFrom, lineTo);
@@ -206,16 +206,20 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
       const from = lineFrom + m.index;
       const to   = from + m[0].length;
       // Replace only once cursor has moved past the token (user finished typing it)
-      if (cursor < from || cursor > to) {
-        // Extract the date text from quoted or bare word
+      if (cursor >= from && cursor <= to) continue;
+
+      const raw = m[0];
+      if (raw === "@now") {
+        changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+      } else {
         const dateText = m[1] ?? m[2]; // group 1 = quoted phrase, group 2 = bare word
         if (!dateText) continue;
         const parsed = chrono.parseDate(dateText, new Date());
         if (!parsed) continue;
-        changes.push({ from, to, insert: "@" + formatDate(new Date()) });
+        changes.push({ from, to, insert: "@" + formatDate(parsed) });
       }
     }
-  }
+  });
 
   if (changes.length > 0) {
     update.view.dispatch({ changes, annotations: nowReplacedAnnotation.of(true) });
