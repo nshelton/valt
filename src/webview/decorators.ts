@@ -1,14 +1,15 @@
 /**
- * CodeMirror 6 decorator plugin + autocomplete + @now ephemeral replacer.
+ * CodeMirror 6 decorator plugin + autocomplete + datetime ephemeral replacer.
  *
  * Supported syntax:
  *   @now                    → ephemeral: immediately replaced with current timestamp
- *   @yesterday              → date badge (chrono-node parsed)
- *   @"next friday"          → date badge (quoted natural language)
+ *   @yesterday              → ephemeral: immediately replaced with resolved date
+ *   @"next friday"          → ephemeral: immediately replaced with resolved date
  *   @tag(Label)             → purple pill
  *   @simple.md              → blue wikilink (simple filenames)
  *   @[Name with spaces.md]  → blue wikilink (filenames with spaces/special chars)
  */
+import * as chrono from "chrono-node";
 import {
   ViewPlugin, DecorationSet, Decoration, WidgetType, EditorView, ViewUpdate,
 } from "@codemirror/view";
@@ -179,16 +180,22 @@ function createCompletionSource(providers: DecoratorProvider[]) {
   };
 }
 
-// ── @now ephemeral replacer ───────────────────────────────────────────────────
+// ── Datetime ephemeral replacer ───────────────────────────────────────────────
+// Scans changed lines for any @word or @"quoted" that chrono can parse and
+// replaces it with the resolved @YYYY-MM-DD HH:MM once the cursor moves past.
 
-const nowReplacedAnnotation = Annotation.define<true>();
+const datetimeReplacedAnnotation = Annotation.define<true>();
 
-const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
+// Matches @"quoted phrase" or @bare-word — but NOT already-resolved timestamps.
+const DATETIME_TOKEN_RE = /@"([^"]*)"|@([\w-]+)/g;
+// Already-resolved timestamps start with a 4-digit year.
+const RESOLVED_TIMESTAMP_RE = /^\d{4}-\d{2}-\d{2}/;
+
+const datetimeReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   if (!update.docChanged) return;
-  if (update.transactions.some((tr) => tr.annotation(nowReplacedAnnotation))) return;
+  if (update.transactions.some((tr) => tr.annotation(datetimeReplacedAnnotation))) return;
 
   const cursor = update.state.selection.main.head;
-  const re = /@now\b/g;
   const changes: { from: number; to: number; insert: string }[] = [];
 
   // Only scan lines touched by this transaction — avoids stringifying the whole doc.
@@ -196,20 +203,24 @@ const nowReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
     const lineFrom = update.state.doc.lineAt(fromB).from;
     const lineTo   = update.state.doc.lineAt(Math.min(toB, update.state.doc.length - 1)).to;
     const text     = update.state.doc.sliceString(lineFrom, lineTo);
-    re.lastIndex   = 0;
+    DATETIME_TOKEN_RE.lastIndex = 0;
     let m: RegExpExecArray | null;
-    while ((m = re.exec(text)) !== null) {
+    while ((m = DATETIME_TOKEN_RE.exec(text)) !== null) {
+      const rawText = m[1] ?? m[2]; // content inside quotes, or bare word
+      // Skip already-resolved timestamps, file links, and tag syntax
+      if (RESOLVED_TIMESTAMP_RE.test(rawText) || rawText.endsWith(".md") || rawText.startsWith("tag(")) continue;
+      const d = chrono.parseDate(rawText, new Date());
+      if (!d) continue;
       const from = lineFrom + m.index;
       const to   = from + m[0].length;
       // Replace only once cursor has moved past the token (user finished typing it)
-      if (cursor < from || cursor > to) {
-        changes.push({ from, to, insert: "@" + formatDate(new Date()) });
-      }
+      if (cursor >= from && cursor <= to) continue;
+      changes.push({ from, to, insert: "@" + formatDate(d) });
     }
   }
 
   if (changes.length > 0) {
-    update.view.dispatch({ changes, annotations: nowReplacedAnnotation.of(true) });
+    update.view.dispatch({ changes, annotations: datetimeReplacedAnnotation.of(true) });
   }
 });
 
@@ -222,7 +233,7 @@ export function createDecoratorExtensions(
 ): Extension[] {
   return [
     createDecoratorPlugin(providers, postMessage, resolveFile),
-    nowReplacer,
+    datetimeReplacer,
   ];
 }
 

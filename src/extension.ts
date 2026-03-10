@@ -3,19 +3,22 @@ import * as path from "path";
 import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
-import { PageIndex, rewriteLinks } from "./pageIndex";
+import { PageIndex, rewriteLinks, extractTitle, extractEmoji } from "./pageIndex";
+import type { RecentFileEntry } from "./shared/messages";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
 let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 const pageIndex = new PageIndex();
+let extensionContext: vscode.ExtensionContext | undefined;
 
 // File queued to open as soon as the webview sends its `ready` handshake.
 // Needed because the panel may not have finished loading when valt.openFile fires.
 let pendingFile: string | undefined;
 
 export function activate(context: vscode.ExtensionContext): void {
+  extensionContext = context;
   const workspaceRoot = getWorkspaceRoot();
 
   treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
@@ -24,7 +27,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const fileTreeView = vscode.window.createTreeView("valt.fileTree", {
     treeDataProvider: treeProvider,
     showCollapseAll: true,
+    dragAndDropController: treeProvider,
   });
+
+  treeProvider.onFileMoved(() => {
+    rebuildIndexes();
+  }, undefined, context.subscriptions);
 
   const tagTreeView = vscode.window.createTreeView("valt.tagTree", {
     treeDataProvider: tagTreeProvider,
@@ -54,12 +62,62 @@ export function activate(context: vscode.ExtensionContext): void {
     treeProvider?.refresh();
   });
 
+  const showHomeCmd = vscode.commands.registerCommand("valt.showHome", () => {
+    if (panel) {
+      panel.reveal(vscode.ViewColumn.One);
+      panel.webview.postMessage({ type: "showHome" } satisfies ExtensionMessage);
+    } else {
+      openValtPanel(context);
+    }
+  });
+
   const setTagColorCmd = vscode.commands.registerCommand(
     "valt.setTagColor",
     async (item?: { tagName?: string }) => {
       const tagName = item?.tagName;
       if (!tagName || !tagTreeProvider) return;
       await tagTreeProvider.promptSetColor(tagName);
+    }
+  );
+
+  const newFolderCmd = vscode.commands.registerCommand(
+    "valt.newFolder",
+    async (item?: { fsPath?: string; isDirectory?: boolean }) => {
+      const root = getWorkspaceRoot();
+      if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+      const parentDir = item?.fsPath
+        ? item.isDirectory ? item.fsPath : path.dirname(item.fsPath)
+        : root;
+      const name = await vscode.window.showInputBox({ prompt: "New folder name", placeHolder: "My Folder" });
+      if (!name?.trim()) return;
+      const folderPath = path.join(parentDir, name.trim());
+      try {
+        fs.mkdirSync(folderPath, { recursive: true });
+      } catch {
+        vscode.window.showErrorMessage(`Valt: Could not create folder "${name}"`);
+        return;
+      }
+      treeProvider?.refresh();
+    }
+  );
+
+  const newPageInFolderCmd = vscode.commands.registerCommand(
+    "valt.newPageInFolder",
+    (item?: { fsPath?: string; isDirectory?: boolean }) => {
+      const root = getWorkspaceRoot();
+      if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+      const targetDir = item?.fsPath
+        ? item.isDirectory ? item.fsPath : path.dirname(item.fsPath)
+        : root;
+      const id = pageIndex.nextId();
+      const filePath = path.join(targetDir, `${id} Untitled.md`);
+      const content = "# Untitled\n\n";
+      fs.writeFileSync(filePath, content, "utf8");
+      pageIndex.updateEntry(filePath, content);
+      treeProvider?.setPageIndex(pageIndex);
+      treeProvider?.refresh();
+      sendFileIndex();
+      sendFileToWebview(filePath);
     }
   );
 
@@ -72,7 +130,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   context.subscriptions.push(
     fileTreeView, tagTreeView,
-    openCmd, openFileCmd, refreshCmd, setTagColorCmd,
+    openCmd, openFileCmd, refreshCmd, showHomeCmd, setTagColorCmd,
+    newFolderCmd, newPageInFolderCmd,
     cfgWatcher,
   );
 
@@ -162,6 +221,7 @@ function handleWebviewMessage(message: WebviewMessage): void {
     case "ready":
       sendFileIndex();
       sendTagIndex();
+      sendRecentFiles();
       if (pendingFile) {
         sendFileToWebview(pendingFile);
         pendingFile = undefined;
@@ -172,6 +232,12 @@ function handleWebviewMessage(message: WebviewMessage): void {
       break;
     case "saveFile":
       handleSaveFile(message.filePath, message.content);
+      break;
+    case "createFile":
+      handleCreateFile();
+      break;
+    case "createDailyNote":
+      handleCreateDailyNote();
       break;
   }
 }
@@ -206,6 +272,8 @@ function sendFileToWebview(filePath: string): void {
     const webviewBaseUri = panel.webview.asWebviewUri(dirUri).toString();
     const msg: ExtensionMessage = { type: "openFile", path: filePath, content, webviewBaseUri };
     panel.webview.postMessage(msg);
+    pushRecent(filePath);
+    sendRecentFiles();
   } catch {
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
   }
@@ -290,6 +358,93 @@ function handleSaveFile(filePath: string, content: string): void {
   sendFileIndex();
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
+}
+
+// ── Recent files ──────────────────────────────────────────────────────────────
+
+const MAX_RECENTS = 5;
+
+function pushRecent(filePath: string): void {
+  if (!extensionContext) return;
+  const current: string[] = extensionContext.globalState.get("valt.recentFiles", []);
+  const updated = [filePath, ...current.filter((p) => p !== filePath)].slice(0, MAX_RECENTS);
+  extensionContext.globalState.update("valt.recentFiles", updated);
+}
+
+function extractPreview(content: string): string {
+  const result: string[] = [];
+  let skippedH1 = false;
+  for (const line of content.split("\n")) {
+    const trimmed = line.trim();
+    if (!skippedH1 && /^#\s/.test(trimmed)) { skippedH1 = true; continue; }
+    if (!trimmed) continue;
+    const clean = trimmed
+      .replace(/^#{1,6}\s+/, "")
+      .replace(/^\s*[-*+]\s+/, "")
+      .replace(/^>\s*/, "")
+      .replace(/\*\*([^*]+)\*\*/g, "$1")
+      .replace(/\*([^*]+)\*/g, "$1")
+      .replace(/@\[\w[^\]]*\]/g, "")
+      .replace(/@\w+/g, "")
+      .trim();
+    if (clean) result.push(clean);
+    if (result.length >= 3) break;
+  }
+  return result.join("  ·  ").slice(0, 180);
+}
+
+function sendRecentFiles(): void {
+  if (!panel) return;
+  const paths: string[] = extensionContext?.globalState.get("valt.recentFiles", []) ?? [];
+  const files: RecentFileEntry[] = [];
+  for (const p of paths) {
+    try {
+      const content = fs.readFileSync(p, "utf8");
+      const entry = pageIndex.getByPath(p);
+      files.push({
+        path: p,
+        displayName: entry?.displayName ?? extractTitle(content),
+        emoji: entry?.emoji ?? extractEmoji(content),
+        preview: extractPreview(content),
+      });
+    } catch { /* file deleted — skip */ }
+  }
+  panel.webview.postMessage({ type: "recentFiles", files } satisfies ExtensionMessage);
+}
+
+// ── Page creation ─────────────────────────────────────────────────────────────
+
+function handleCreateFile(): void {
+  const root = getWorkspaceRoot();
+  if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+  const id = pageIndex.nextId();
+  const filePath = path.join(root, `${id} Untitled.md`);
+  const content = "# Untitled\n\n";
+  fs.writeFileSync(filePath, content, "utf8");
+  pageIndex.updateEntry(filePath, content);
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
+  sendFileIndex();
+  sendFileToWebview(filePath);
+}
+
+function handleCreateDailyNote(): void {
+  const root = getWorkspaceRoot();
+  if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+  const today = new Date();
+  const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
+  // If a page with today's date as display name already exists, open it
+  const existing = pageIndex.getByDisplayName(dateStr);
+  if (existing) { sendFileToWebview(existing.fsPath); return; }
+  const id = pageIndex.nextId();
+  const filePath = path.join(root, `${id} ${dateStr}.md`);
+  const content = `# ${dateStr}\n\n`;
+  fs.writeFileSync(filePath, content, "utf8");
+  pageIndex.updateEntry(filePath, content);
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
+  sendFileIndex();
+  sendFileToWebview(filePath);
 }
 
 // ── Tag index ─────────────────────────────────────────────────────────────────

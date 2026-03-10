@@ -11,6 +11,14 @@ export interface PageInfo {
   emoji: string | null;  // leading emoji from H1, if any
 }
 
+/** One entry in the recently-opened files list. */
+export interface RecentFileEntry {
+  path: string;          // absolute filesystem path
+  displayName: string;
+  emoji: string | null;
+  preview: string;       // first ~180 chars of body text, markdown stripped
+}
+
 // ── Extension → Webview ──────────────────────────────────────────────────────
 
 export interface OpenFileMessage {
@@ -38,11 +46,24 @@ export interface FileRenamedMessage {
   newPath: string;
 }
 
+/** Sent (or re-sent) whenever the recent-files list changes. */
+export interface RecentFilesMessage {
+  type: "recentFiles";
+  files: RecentFileEntry[];
+}
+
+/** Tell the webview to navigate back to the home screen. */
+export interface ShowHomeMessage {
+  type: "showHome";
+}
+
 export type ExtensionMessage =
   | OpenFileMessage
   | FileIndexMessage
   | TagIndexMessage
-  | FileRenamedMessage;
+  | FileRenamedMessage
+  | RecentFilesMessage
+  | ShowHomeMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
@@ -65,7 +86,19 @@ export interface SaveFileMessage {
   content: string;
 }
 
+/** Ask the extension to create a blank new page and open it. */
+export interface CreateFileMessage {
+  type: "createFile";
+}
+
+/** Ask the extension to create/open today's daily note. */
+export interface CreateDailyNoteMessage {
+  type: "createDailyNote";
+}
+
 export type WebviewMessage =
   | ReadyMessage
   | RequestFileMessage
-  | SaveFileMessage;
+  | SaveFileMessage
+  | CreateFileMessage
+  | CreateDailyNoteMessage;

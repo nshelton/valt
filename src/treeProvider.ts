@@ -31,11 +31,19 @@ export class ValtTreeItem extends vscode.TreeItem {
 // ── Provider ──────────────────────────────────────────────────────────────────
 
 export class ValtTreeProvider
-  implements vscode.TreeDataProvider<ValtTreeItem>
+  implements
+    vscode.TreeDataProvider<ValtTreeItem>,
+    vscode.TreeDragAndDropController<ValtTreeItem>
 {
   private readonly _onDidChangeTreeData =
     new vscode.EventEmitter<ValtTreeItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
+
+  private readonly _onFileMoved = new vscode.EventEmitter<void>();
+  readonly onFileMoved = this._onFileMoved.event;
+
+  readonly dragMimeTypes = ["application/vnd.code.tree.valt.fileTree"];
+  readonly dropMimeTypes = ["application/vnd.code.tree.valt.fileTree"];
 
   private pageIndex: PageIndex | null = null;
 
@@ -60,6 +68,56 @@ export class ValtTreeProvider
     return this.readDirectory(dir);
   }
 
+  async handleDrag(
+    source: readonly ValtTreeItem[],
+    dataTransfer: vscode.DataTransfer,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    dataTransfer.set(
+      "application/vnd.code.tree.valt.fileTree",
+      new vscode.DataTransferItem(source.map((item) => item.fsPath))
+    );
+  }
+
+  async handleDrop(
+    target: ValtTreeItem | undefined,
+    dataTransfer: vscode.DataTransfer,
+    _token: vscode.CancellationToken
+  ): Promise<void> {
+    const transferItem = dataTransfer.get("application/vnd.code.tree.valt.fileTree");
+    if (!transferItem) return;
+
+    const sourcePaths: string[] = transferItem.value;
+
+    const targetDir = !target
+      ? this.rootPath
+      : target.isDirectory
+      ? target.fsPath
+      : path.dirname(target.fsPath);
+
+    let moved = false;
+    for (const srcPath of sourcePaths) {
+      // Skip if already in the target directory
+      if (path.dirname(srcPath) === targetDir) continue;
+      // Skip if dropping a directory into itself or a descendant
+      if (targetDir === srcPath || targetDir.startsWith(srcPath + path.sep)) continue;
+
+      const basename = path.basename(srcPath);
+      const destPath = path.join(targetDir, basename);
+      try {
+        fs.renameSync(srcPath, destPath);
+        moved = true;
+      } catch {
+        vscode.window.showErrorMessage(`Valt: Could not move "${basename}"`);
+      }
+    }
+
+    if (moved) {
+      this._onFileMoved.fire();
+      this.refresh();
+    }
+  }
+
   private readDirectory(dir: string): ValtTreeItem[] {
     if (!fs.existsSync(dir)) return [];
 
@@ -73,16 +131,14 @@ export class ValtTreeProvider
       const fullPath = path.join(dir, entry.name);
 
       if (entry.isDirectory()) {
-        if (this.directoryContainsMarkdown(fullPath)) {
-          dirs.push(
-            new ValtTreeItem(
-              entry.name,
-              fullPath,
-              true,
-              vscode.TreeItemCollapsibleState.Collapsed
-            )
-          );
-        }
+        dirs.push(
+          new ValtTreeItem(
+            entry.name,
+            fullPath,
+            true,
+            vscode.TreeItemCollapsibleState.Collapsed
+          )
+        );
       } else if (entry.name.endsWith(".md")) {
         const label = this.labelFor(fullPath, entry.name);
         files.push(
@@ -114,7 +170,6 @@ export class ValtTreeProvider
   }
 
   private sortFiles(files: ValtTreeItem[]): ValtTreeItem[] {
-    // Gather page entries to sort by numeric ID where available
     return files.sort((a, b) => {
       const entryA = this.pageIndex?.getByPath(a.fsPath);
       const entryB = this.pageIndex?.getByPath(b.fsPath);
@@ -127,18 +182,5 @@ export class ValtTreeProvider
       if (idB !== null) return 1;
       return (a.label as string).localeCompare(b.label as string);
     });
-  }
-
-  private directoryContainsMarkdown(dir: string): boolean {
-    try {
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
-      return entries.some(
-        (e) =>
-          (e.isFile() && e.name.endsWith(".md")) ||
-          (e.isDirectory() && this.directoryContainsMarkdown(path.join(dir, e.name)))
-      );
-    } catch {
-      return false;
-    }
   }
 }

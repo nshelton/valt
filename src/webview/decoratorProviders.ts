@@ -55,7 +55,7 @@ export class DateTimeProvider extends DecoratorProvider {
     return {
       displayText: "@" + formatDate(d),
       cssClass: "cm-decorator cm-decorator-now",
-      isReplace: true,
+      isReplace: false,
     };
   }
 
@@ -77,7 +77,15 @@ export class DateTimeProvider extends DecoratorProvider {
       .map((s): Completion => {
         const label = s.quoted ? `@"${s.text}"` : `@${s.text}`;
         const d = chrono.parseDate(s.text, new Date());
-        return { label, type: "keyword", detail: d ? formatDate(d) : undefined };
+        const resolved = d ? "@" + formatDate(d) : label;
+        return {
+          label,
+          type: "keyword",
+          detail: d ? formatDate(d) : undefined,
+          apply: (view: EditorView, _: Completion, from: number, to: number) => {
+            view.dispatch({ changes: { from, to, insert: resolved } });
+          },
+        };
       });
 
     // Always include @now if query could match "now"
