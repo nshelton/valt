@@ -10,7 +10,7 @@ import { languages } from "@codemirror/language-data";
 import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import type { ExtensionMessage, WebviewMessage } from "../shared/messages";
+import type { ExtensionMessage, WebviewMessage, RecentFileEntry } from "../shared/messages";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
 import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
@@ -40,6 +40,8 @@ let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 // ── Module state ── page metadata ─────────────────────────────────────────────
 
 let pageList: PageInfo[] = [];
+let recentFiles: RecentFileEntry[] = [];
+let tagCount = 0;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
@@ -65,6 +67,47 @@ const headingStyles = HighlightStyle.define([
   { tag: tags.heading5, class: "cm-heading-5" },
   { tag: tags.heading6, class: "cm-heading-6" },
 ]);
+
+// ── Inline code decoration (hides backticks when cursor is outside) ────────────
+
+function buildInlineCodeDecos(view: EditorView): DecorationSet {
+  const builder = new RangeSetBuilder<Decoration>();
+  const { doc, selection } = view.state;
+  const cursor = selection.main;
+  for (const { from, to } of view.visibleRanges) {
+    syntaxTree(view.state).iterate({
+      from, to,
+      enter(node) {
+        if (node.name !== "InlineCode") return;
+        const sample = doc.sliceString(node.from, node.from + 4);
+        let delimLen = 0;
+        while (delimLen < sample.length && sample[delimLen] === '`') delimLen++;
+        const contentFrom = node.from + delimLen;
+        const contentTo = node.to - delimLen;
+        if (contentFrom >= contentTo) return;
+        const cursorInside = cursor.from >= node.from && cursor.to <= node.to;
+        if (cursorInside) return; // show raw syntax while editing
+        builder.add(node.from, contentFrom, Decoration.replace({}));
+        builder.add(contentFrom, contentTo, Decoration.mark({ class: "cm-inline-code" }));
+        builder.add(contentTo, node.to, Decoration.replace({}));
+      },
+    });
+  }
+  return builder.finish();
+}
+
+const inlineCodePlugin = ViewPlugin.fromClass(
+  class {
+    decorations: DecorationSet;
+    constructor(view: EditorView) { this.decorations = buildInlineCodeDecos(view); }
+    update(u: ViewUpdate) {
+      if (u.docChanged || u.viewportChanged || u.selectionSet) {
+        this.decorations = buildInlineCodeDecos(u.view);
+      }
+    }
+  },
+  { decorations: (v) => v.decorations },
+);
 
 // ── Code block line decoration ────────────────────────────────────────────────
 
@@ -146,6 +189,7 @@ function createEditor(content: string): EditorView {
       syntaxHighlighting(headingStyles),
       tablePlugin,
       codeBlockPlugin,
+      inlineCodePlugin,
       inlineStylePlugin,
       emojiSizePlugin,
       ...createDecoratorExtensions(
@@ -186,14 +230,24 @@ function handleExtensionMessage(message: ExtensionMessage): void {
     case "fileIndex":
       pageList = message.pages;
       pageProvider.setPages(message.pages);
+      if (isOnHome()) refreshHomeStats();
       break;
     case "tagIndex":
+      tagCount = Object.keys(message.tags).length;
       tagProvider.setTagNames(Object.keys(message.tags), message.colors);
+      if (isOnHome()) refreshHomeStats();
       break;
     case "fileRenamed":
       if (currentFilePath === message.oldPath) {
         currentFilePath = message.newPath;
       }
+      break;
+    case "recentFiles":
+      recentFiles = message.files;
+      if (isOnHome()) renderHomeScreen();
+      break;
+    case "showHome":
+      showHome();
       break;
   }
 }
@@ -239,10 +293,150 @@ function showDocument(content: string, sameFile = false): void {
   editorView?.focus();
 }
 
+// ── Home screen ───────────────────────────────────────────────────────────────
+
+function isOnHome(): boolean {
+  return welcomeEl.style.display !== "none";
+}
+
+function showHome(): void {
+  welcomeEl.style.display = "block";
+  editorRoot.style.display = "none";
+  pageEmojiEl.style.display = "none";
+  currentFilePath = "";
+  renderHomeScreen();
+}
+
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+function escapeAttr(s: string): string {
+  return s.replace(/"/g, "&quot;");
+}
+
+function renderHomeScreen(): void {
+  welcomeEl.innerHTML = `
+    <div class="home-header">
+      <div class="home-logo">◈</div>
+      <h1 class="home-title">Valt</h1>
+    </div>
+    <div class="home-toolbar">
+      <div class="home-search-wrap">
+        <input id="home-search" class="home-search" type="text" placeholder="Search pages…" autocomplete="off" spellcheck="false" />
+        <div id="home-search-results" class="home-search-results" hidden></div>
+      </div>
+      <button id="home-new-btn" class="home-btn-primary">+ New Page</button>
+    </div>
+    <section class="home-section">
+      <h2 class="home-section-title">Recent</h2>
+      <div class="home-cards" id="home-cards">
+        ${renderCards()}
+      </div>
+    </section>
+    <div class="home-footer">
+      <button id="home-daily-btn" class="home-btn-secondary">📅 Daily Note</button>
+      <span class="home-stats" id="home-stats">${statsText()}</span>
+    </div>
+  `;
+  wireHomeEvents();
+}
+
+function renderCards(): string {
+  if (recentFiles.length === 0) {
+    return `<p class="home-empty">No recent pages — open a file from the sidebar to get started.</p>`;
+  }
+  return recentFiles.map((f) => `
+    <div class="home-card" data-path="${escapeAttr(f.path)}" role="button" tabindex="0">
+      <div class="home-card-inner">
+        ${f.emoji ? `<div class="home-card-emoji">${f.emoji}</div>` : ""}
+        <div class="home-card-title">${escapeHtml(f.displayName)}</div>
+        ${f.preview ? `<div class="home-card-preview">${escapeHtml(f.preview)}</div>` : ""}
+      </div>
+    </div>
+  `).join("");
+}
+
+function statsText(): string {
+  const p = pageList.length;
+  const t = tagCount;
+  const parts: string[] = [];
+  if (p > 0) parts.push(`${p} page${p !== 1 ? "s" : ""}`);
+  if (t > 0) parts.push(`${t} tag${t !== 1 ? "s" : ""}`);
+  return parts.join(" · ");
+}
+
+function refreshHomeStats(): void {
+  const el = document.getElementById("home-stats");
+  if (el) el.textContent = statsText();
+}
+
+function wireHomeEvents(): void {
+  // Card clicks
+  welcomeEl.querySelectorAll<HTMLElement>(".home-card").forEach((card) => {
+    const open = () => { const p = card.dataset.path; if (p) vscode.postMessage({ type: "requestFile", path: p }); };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") open(); });
+  });
+
+  // New page button
+  document.getElementById("home-new-btn")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "createFile" });
+  });
+
+  // Daily note button
+  document.getElementById("home-daily-btn")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "createDailyNote" });
+  });
+
+  // Search
+  const searchInput = document.getElementById("home-search") as HTMLInputElement | null;
+  const searchResults = document.getElementById("home-search-results") as HTMLDivElement | null;
+  if (!searchInput || !searchResults) return;
+
+  searchInput.addEventListener("input", () => {
+    const q = searchInput.value.trim().toLowerCase();
+    if (!q) { searchResults.hidden = true; return; }
+    const matches = pageList.filter((p) => p.displayName.toLowerCase().includes(q)).slice(0, 10);
+    if (matches.length === 0) {
+      searchResults.innerHTML = `<div class="home-search-empty">No pages found</div>`;
+    } else {
+      searchResults.innerHTML = matches.map((p) => `
+        <div class="home-search-item" data-name="${escapeAttr(p.displayName)}" tabindex="0">
+          <span class="home-search-item-icon">${p.emoji ?? "◈"}</span>
+          <span>${escapeHtml(p.displayName)}</span>
+        </div>
+      `).join("");
+      searchResults.querySelectorAll<HTMLElement>(".home-search-item").forEach((item) => {
+        const open = () => {
+          const name = item.dataset.name;
+          if (name) vscode.postMessage({ type: "requestFile", path: name });
+          searchInput.value = "";
+          searchResults.hidden = true;
+        };
+        item.addEventListener("click", open);
+        item.addEventListener("keydown", (e) => { if (e.key === "Enter") open(); });
+      });
+    }
+    searchResults.hidden = false;
+  });
+
+  searchInput.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { searchInput.value = ""; searchResults.hidden = true; }
+  });
+
+  document.addEventListener("click", (e) => {
+    if (!searchInput.contains(e.target as Node) && !searchResults.contains(e.target as Node)) {
+      searchResults.hidden = true;
+    }
+  });
+}
+
 // ── Init ──────────────────────────────────────────────────────────────────────
 
 function init(): void {
   injectStyles();
+  renderHomeScreen();
   vscode.postMessage({ type: "ready" });
 }
 

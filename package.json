@@ -22,6 +22,11 @@
         "icon": "$(go-to-file)"
       },
       {
+        "command": "valt.showHome",
+        "title": "Valt: Show Home",
+        "icon": "$(home)"
+      },
+      {
         "command": "valt.refreshTree",
         "title": "Valt: Refresh File Tree",
         "icon": "$(refresh)"
@@ -29,6 +34,18 @@
       {
         "command": "valt.setTagColor",
         "title": "Set Tag Color"
+      },
+      {
+        "command": "valt.newFolder",
+        "title": "Add Folder"
+      },
+      {
+        "command": "valt.newPageInFolder",
+        "title": "Add Page"
+      },
+      {
+        "command": "valt.removeFromFavorites",
+        "title": "Remove from Favorites"
       }
     ],
     "viewsContainers": {
@@ -43,6 +60,10 @@
     "views": {
       "valt-sidebar": [
         {
+          "id": "valt.favoritesTree",
+          "name": "Favorites"
+        },
+        {
           "id": "valt.fileTree",
           "name": "Files"
         },
@@ -55,6 +76,11 @@
     "menus": {
       "view/title": [
         {
+          "command": "valt.showHome",
+          "when": "view == valt.fileTree",
+          "group": "navigation"
+        },
+        {
           "command": "valt.refreshTree",
           "when": "view == valt.fileTree",
           "group": "navigation"
@@ -65,6 +91,21 @@
           "command": "valt.setTagColor",
           "when": "view == valt.tagTree && viewItem == tag",
           "group": "inline"
+        },
+        {
+          "command": "valt.newFolder",
+          "when": "view == valt.fileTree && viewItem == valtDirectory",
+          "group": "1_create@1"
+        },
+        {
+          "command": "valt.newPageInFolder",
+          "when": "view == valt.fileTree && (viewItem == valtDirectory || viewItem == valtFile)",
+          "group": "1_create@2"
+        },
+        {
+          "command": "valt.removeFromFavorites",
+          "when": "view == valt.favoritesTree && viewItem == valtFavorite",
+          "group": "1_manage@1"
         }
       ]
     },
