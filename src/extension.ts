@@ -3,6 +3,7 @@ import * as path from "path";
 import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
+import { FavoritesTreeProvider } from "./favoritesProvider";
 import { PageIndex, rewriteLinks, extractTitle, extractEmoji } from "./pageIndex";
 import type { RecentFileEntry } from "./shared/messages";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
@@ -10,6 +11,7 @@ import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 let panel: vscode.WebviewPanel | undefined;
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
+let favoritesProvider: FavoritesTreeProvider | undefined;
 const pageIndex = new PageIndex();
 let extensionContext: vscode.ExtensionContext | undefined;
 
@@ -23,6 +25,12 @@ export function activate(context: vscode.ExtensionContext): void {
 
   treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
   tagTreeProvider = new ValtTagTreeProvider();
+  favoritesProvider = new FavoritesTreeProvider(context.workspaceState);
+
+  const favoritesTreeView = vscode.window.createTreeView("valt.favoritesTree", {
+    treeDataProvider: favoritesProvider,
+    dragAndDropController: favoritesProvider,
+  });
 
   const fileTreeView = vscode.window.createTreeView("valt.fileTree", {
     treeDataProvider: treeProvider,
@@ -128,10 +136,17 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  const removeFavoriteCmd = vscode.commands.registerCommand(
+    "valt.removeFromFavorites",
+    (item?: { fsPath?: string }) => {
+      if (item?.fsPath) favoritesProvider?.removeFromFavorites(item.fsPath);
+    }
+  );
+
   context.subscriptions.push(
-    fileTreeView, tagTreeView,
+    favoritesTreeView, fileTreeView, tagTreeView,
     openCmd, openFileCmd, refreshCmd, showHomeCmd, setTagColorCmd,
-    newFolderCmd, newPageInFolderCmd,
+    newFolderCmd, newPageInFolderCmd, removeFavoriteCmd,
     cfgWatcher,
   );
 
@@ -478,6 +493,7 @@ async function rebuildIndexes(): Promise<void> {
   pageIndex.build(pageFiles);
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
+  favoritesProvider?.setPageIndex(pageIndex);
 }
 
 // Keep for incremental tag updates on save

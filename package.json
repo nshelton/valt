@@ -42,6 +42,10 @@
       {
         "command": "valt.newPageInFolder",
         "title": "Add Page"
+      },
+      {
+        "command": "valt.removeFromFavorites",
+        "title": "Remove from Favorites"
       }
     ],
     "viewsContainers": {
@@ -55,6 +59,10 @@
     },
     "views": {
       "valt-sidebar": [
+        {
+          "id": "valt.favoritesTree",
+          "name": "Favorites"
+        },
         {
           "id": "valt.fileTree",
           "name": "Files"
@@ -93,6 +101,11 @@
           "command": "valt.newPageInFolder",
           "when": "view == valt.fileTree && (viewItem == valtDirectory || viewItem == valtFile)",
           "group": "1_create@2"
+        },
+        {
+          "command": "valt.removeFromFavorites",
+          "when": "view == valt.favoritesTree && viewItem == valtFavorite",
+          "group": "1_manage@1"
         }
       ]
     },

@@ -23,7 +23,6 @@ export class ValtTreeItem extends vscode.TreeItem {
         title: "Open File",
         arguments: [fsPath],
       };
-      this.iconPath = new vscode.ThemeIcon("markdown");
     }
   }
 }
