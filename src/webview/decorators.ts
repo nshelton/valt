@@ -199,7 +199,7 @@ const datetimeReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   const changes: { from: number; to: number; insert: string }[] = [];
 
   // Only scan lines touched by this transaction — avoids stringifying the whole doc.
-  for (const { fromB, toB } of update.changedRanges) {
+  update.changes.iterChangedRanges((_fromA, _toA, fromB, toB) => {
     const lineFrom = update.state.doc.lineAt(fromB).from;
     const lineTo   = update.state.doc.lineAt(Math.min(toB, update.state.doc.length - 1)).to;
     const text     = update.state.doc.sliceString(lineFrom, lineTo);
@@ -214,10 +214,10 @@ const datetimeReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
       const from = lineFrom + m.index;
       const to   = from + m[0].length;
       // Replace only once cursor has moved past the token (user finished typing it)
-      if (cursor >= from && cursor <= to) continue;
+      if (cursor >= from && cursor <= to) return;
       changes.push({ from, to, insert: "@" + formatDate(d) });
     }
-  }
+  });
 
   if (changes.length > 0) {
     update.view.dispatch({ changes, annotations: datetimeReplacedAnnotation.of(true) });
