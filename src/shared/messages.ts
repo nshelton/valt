@@ -36,6 +36,7 @@ export interface OpenFileMessage {
   webviewBaseUri: string;
   backlinks: PageLink[];
   outgoingLinks: PageLink[];
+  children: PageLink[];   // pages one level deeper in the folder hierarchy
   createdAt: number;     // ms timestamp (0 if unavailable)
   modifiedAt: number;    // ms timestamp
   breadcrumb: string[];  // folder names between workspace root and file
@@ -77,6 +78,18 @@ export interface FavoritesMessage {
   isFavorited: boolean;
 }
 
+/** Sent after the extension writes an image to disk. */
+export interface ImageSavedMessage {
+  type: "imageSaved";
+  relativePath: string;  // e.g. "./img-d4e5f6a7.png"  (relative to the .md file)
+}
+
+/** Sent after a new page is created via /page command; webview inserts the link. */
+export interface InsertPageLinkMessage {
+  type: "insertPageLink";
+  uuid: string;
+}
+
 export type ExtensionMessage =
   | OpenFileMessage
   | FileIndexMessage
@@ -84,7 +97,9 @@ export type ExtensionMessage =
   | FileRenamedMessage
   | RecentFilesMessage
   | ShowHomeMessage
-  | FavoritesMessage;
+  | FavoritesMessage
+  | ImageSavedMessage
+  | InsertPageLinkMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
@@ -123,10 +138,26 @@ export interface ToggleFavoriteMessage {
   filePath: string;
 }
 
+/** Ask the extension to save a dropped/pasted image next to the current file. */
+export interface SaveImageMessage {
+  type: "saveImage";
+  currentFilePath: string;
+  data: string;       // base64-encoded image bytes
+  mimeType: string;   // e.g. "image/png"
+}
+
+/** Ask the extension to create a new page and insert a link to it at the cursor. */
+export interface CreatePageFromEditorMessage {
+  type: "createPageFromEditor";
+  currentFilePath: string;
+}
+
 export type WebviewMessage =
   | ReadyMessage
   | RequestFileMessage
   | SaveFileMessage
   | CreateFileMessage
   | CreateDailyNoteMessage
-  | ToggleFavoriteMessage;
+  | ToggleFavoriteMessage
+  | SaveImageMessage
+  | CreatePageFromEditorMessage;

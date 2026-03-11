@@ -113,14 +113,7 @@ export function activate(context: vscode.ExtensionContext): void {
         targetDir = root;
       }
 
-      const id = generateId();
-      const filePath = path.join(targetDir, `${id} Untitled.md`);
-      const content = "# Untitled\n\n";
-      fs.writeFileSync(filePath, content, "utf8");
-      pageIndex.updateEntry(filePath, content);
-      treeProvider?.setPageIndex(pageIndex);
-      treeProvider?.refresh();
-      sendFileIndex();
+      const { filePath } = createNewPage(targetDir);
       sendFileToWebview(filePath);
     }
   );
@@ -277,7 +270,29 @@ function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPan
     case "toggleFavorite":
       handleToggleFavorite(message.filePath, source);
       break;
+    case "saveImage":
+      handleSaveImage(message.currentFilePath, message.data, message.mimeType, source);
+      break;
+    case "createPageFromEditor":
+      handleCreatePageFromEditor(message.currentFilePath, source);
+      break;
   }
+}
+
+function handleSaveImage(
+  currentFilePath: string,
+  data: string,
+  mimeType: string,
+  target: vscode.WebviewPanel
+): void {
+  const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
+  const id = generateId();
+  const dir = path.dirname(currentFilePath);
+  const filename = `img-${id}.${ext}`;
+  const absPath = path.join(dir, filename);
+  fs.writeFileSync(absPath, Buffer.from(data, "base64"));
+  const relativePath = `./${filename}`;
+  target.webview.postMessage({ type: "imageSaved", relativePath } satisfies ExtensionMessage);
 }
 
 function handleToggleFavorite(filePath: string, target: vscode.WebviewPanel): void {
@@ -326,6 +341,12 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
       return e ? [{ displayName: e.displayName, fsPath: e.fsPath, emoji: e.emoji }] : [];
     });
 
+    const currentEntry = pageIndex.getByPath(filePath);
+    const childDir = path.join(path.dirname(filePath), currentEntry?.displayName ?? "");
+    const children: PageLink[] = pageIndex.getAll()
+      .filter((e) => path.dirname(e.fsPath) === childDir)
+      .map((e) => ({ displayName: e.displayName, fsPath: e.fsPath, emoji: e.emoji }));
+
     let createdAt = 0;
     let modifiedAt = 0;
     try {
@@ -343,7 +364,7 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
     const isFavorited = favoritesProvider?.isFavorite(filePath) ?? false;
     const msg: ExtensionMessage = {
       type: "openFile", path: filePath, content, webviewBaseUri,
-      backlinks, outgoingLinks, createdAt, modifiedAt, breadcrumb, isFavorited,
+      backlinks, outgoingLinks, children, createdAt, modifiedAt, breadcrumb, isFavorited,
     };
     target.webview.postMessage(msg);
     pushRecent(filePath);
@@ -477,17 +498,40 @@ function extractPreview(content: string): string {
 
 // ── Page creation ─────────────────────────────────────────────────────────────
 
-function handleCreateFile(target: vscode.WebviewPanel): void {
-  const root = getWorkspaceRoot();
-  if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+const PAGE_EMOJIS = ["📝", "💡", "🌟", "🎯", "🔮", "🧭", "🌿", "⚡", "🎨", "🔬", "📚", "🌈", "🚀", "🧩", "💎", "🎲", "🦋", "🌊", "🔑", "🎪"];
+
+function randomPageEmoji(): string {
+  return PAGE_EMOJIS[Math.floor(Math.random() * PAGE_EMOJIS.length)];
+}
+
+function createNewPage(dir: string): { filePath: string; id: string } {
   const id = generateId();
-  const filePath = path.join(root, `${id} Untitled.md`);
-  const content = "# Untitled\n\n";
+  const emoji = randomPageEmoji();
+  const filePath = path.join(dir, `${id} New Page.md`);
+  const content = `# ${emoji} New Page\n\n`;
   fs.writeFileSync(filePath, content, "utf8");
   pageIndex.updateEntry(filePath, content);
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
   sendFileIndex();
+  return { filePath, id };
+}
+
+function handleCreateFile(target: vscode.WebviewPanel): void {
+  const root = getWorkspaceRoot();
+  if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+  const { filePath } = createNewPage(root);
+  sendFileTo(filePath, target);
+}
+
+function handleCreatePageFromEditor(currentFilePath: string, target: vscode.WebviewPanel): void {
+  const root = getWorkspaceRoot();
+  if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
+  const stem = path.basename(currentFilePath, ".md");
+  const targetDir = path.join(path.dirname(currentFilePath), stem);
+  if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
+  const { filePath, id } = createNewPage(targetDir);
+  target.webview.postMessage({ type: "insertPageLink", uuid: id } satisfies ExtensionMessage);
   sendFileTo(filePath, target);
 }
 

@@ -2,7 +2,7 @@
  * Webview entry point — CodeMirror 6 markdown editor.
  */
 import { EditorView, keymap, highlightActiveLine, drawSelection, ViewPlugin, DecorationSet, Decoration, ViewUpdate } from "@codemirror/view";
-import { EditorState, RangeSetBuilder } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, Compartment } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -14,9 +14,11 @@ import type { ExtensionMessage, WebviewMessage, RecentFileEntry, OpenFileMessage
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
 import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
-import { componentMenuCompletionSource } from "./componentMenu";
+import { createComponentMenuCompletionSource } from "./componentMenu";
 import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
 import { DateTimeProvider, PageProvider, TagProvider, type PageInfo } from "./decoratorProviders";
+import { createImagePlugin } from "./imagePlugin";
+import { twoColumnPlugin } from "./twoColumnPlugin";
 import styles from "./style.css";
 
 const tagProvider = new TagProvider();
@@ -34,15 +36,19 @@ const vscode = acquireVsCodeApi();
 // ── Module state ──────────────────────────────────────────────────────────────
 
 let currentFilePath = "";
+let currentWebviewBaseUri = "";
 let currentIsFavorited = false;
 let editorView: EditorView | null = null;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
+let isRawMode = false;
+const richCompartment = new Compartment();
 
 // ── Module state ── page metadata ─────────────────────────────────────────────
 
 let pageList: PageInfo[] = [];
 let recentFiles: RecentFileEntry[] = [];
 let tagCount = 0;
+let pendingPageLinkPos: number | null = null;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
@@ -205,9 +211,72 @@ function scheduleSave(): void {
   }, 500);
 }
 
+// ── Image helpers ─────────────────────────────────────────────────────────────
+
+function insertImageMarkdown(relativePath: string): void {
+  if (!editorView) return;
+  const { state } = editorView;
+  const cursor = state.selection.main.head;
+  const line = state.doc.lineAt(cursor);
+
+  // If the current line is empty use it; otherwise append on a new line.
+  // No trailing newline — the widget is atomic so delete/cut removes it cleanly.
+  const insertAt = line.length === 0 ? line.from : line.to;
+  const prefix   = line.length === 0 ? "" : "\n";
+  const text = `${prefix}![](${relativePath})<!-- valt: size=medium align=left -->`;
+
+  editorView.dispatch({
+    changes: { from: insertAt, insert: text },
+    selection: { anchor: insertAt + text.length },
+  });
+}
+
+function sendImageFile(file: File): void {
+  const reader = new FileReader();
+  reader.onload = () => {
+    const dataUrl = reader.result as string;
+    const [header, data] = dataUrl.split(",");
+    const mimeType = header.match(/data:([^;]+)/)?.[1] ?? "image/png";
+    vscode.postMessage({ type: "saveImage", currentFilePath, data, mimeType });
+  };
+  reader.readAsDataURL(file);
+}
+
+function setupImageDrop(): void {
+  // Drag & drop
+  document.addEventListener("dragover", (e) => {
+    const items = e.dataTransfer ? Array.from(e.dataTransfer.items) : [];
+    if (items.some((i) => i.kind === "file" && i.type.startsWith("image/"))) {
+      e.preventDefault();
+    }
+  });
+
+  document.addEventListener("drop", (e) => {
+    const files = e.dataTransfer
+      ? Array.from(e.dataTransfer.files).filter((f) => f.type.startsWith("image/"))
+      : [];
+    if (files.length === 0 || !currentFilePath) return;
+    e.preventDefault();
+    for (const file of files) sendImageFile(file);
+  });
+
+  // Paste
+  document.addEventListener("paste", (e) => {
+    if (!currentFilePath) return;
+    const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+    const imageItems = items.filter((i) => i.kind === "file" && i.type.startsWith("image/"));
+    if (imageItems.length === 0) return;
+    e.preventDefault();
+    for (const item of imageItems) {
+      const file = item.getAsFile();
+      if (file) sendImageFile(file);
+    }
+  });
+}
+
 // ── Editor creation ───────────────────────────────────────────────────────────
 
-function createEditor(content: string): EditorView {
+function createEditor(content: string, webviewBaseUri: string): EditorView {
   if (editorView) editorView.destroy();
 
   const updateListener = EditorView.updateListener.of((update) => {
@@ -236,6 +305,8 @@ function createEditor(content: string): EditorView {
       syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
       syntaxHighlighting(headingStyles),
       tablePlugin,
+      twoColumnPlugin,
+      createImagePlugin(webviewBaseUri),
       codeBlockPlugin,
       inlineCodePlugin,
       inlineStylePlugin,
@@ -244,7 +315,11 @@ function createEditor(content: string): EditorView {
         providers,
         (msg) => vscode.postMessage(msg),
       ),
-      autocompletion({ override: [componentMenuCompletionSource, createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+      autocompletion({ override: [createComponentMenuCompletionSource(
+        (msg) => vscode.postMessage(msg),
+        () => currentFilePath,
+        (pos) => { pendingPageLinkPos = pos; },
+      ), createDecoratorCompletionSource(providers), emojiCompletionSource] }),
       updateListener,
       EditorView.lineWrapping,
     ],
@@ -274,10 +349,11 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       isBackNav = false;
       const isSameFile = currentFilePath === message.path;
       currentFilePath = message.path;
+      currentWebviewBaseUri = message.webviewBaseUri;
       currentIsFavorited = message.isFavorited;
       showDocument(message.content, isSameFile);
       updateEmojiHeader(message.content);
-      renderSubPageCards(message.outgoingLinks);
+      renderSubPageCards(message.children);
       renderTopbar(message);
       break;
     }
@@ -307,6 +383,21 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       currentIsFavorited = message.isFavorited;
       updateStarButton();
       break;
+    case "imageSaved":
+      insertImageMarkdown(message.relativePath);
+      break;
+    case "insertPageLink": {
+      if (editorView && pendingPageLinkPos !== null) {
+        const pos = pendingPageLinkPos;
+        pendingPageLinkPos = null;
+        const insert = `@[${message.uuid}]`;
+        editorView.dispatch({
+          changes: { from: pos, to: pos, insert },
+          selection: { anchor: pos + insert.length },
+        });
+      }
+      break;
+    }
   }
 }
 
@@ -374,7 +465,7 @@ function showDocument(content: string, sameFile = false): void {
   } else {
     // Different file: fresh editor state so undo history doesn't bleed across files.
     // createEditor() destroys the old view and resets cursor/scroll to position 0.
-    createEditor(content);
+    createEditor(content, currentWebviewBaseUri);
   }
 
   editorView?.focus();
@@ -601,6 +692,7 @@ function wireHomeEvents(): void {
 function init(): void {
   injectStyles();
   renderHomeScreen();
+  setupImageDrop();
   vscode.postMessage({ type: "ready" });
 }
 
