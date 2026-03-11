@@ -1,8 +1,12 @@
 {
   "name": "valt",
   "displayName": "Valt",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nshelton/valt"
+  },
   "description": "A lightweight personal knowledge base for VSCode — markdown files, beautifully rendered.",
-  "version": "0.1.0",
+  "version": "1.0.0",
   "engines": {
     "vscode": "^1.85.0"
   },

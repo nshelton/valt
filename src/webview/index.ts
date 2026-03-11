@@ -509,6 +509,13 @@ function showDocument(content: string, sameFile = false): void {
   editorRoot.style.display = "block";
   currentDatabaseFolder = "";
 
+  // If coming from the database view, clear the container so the DB HTML doesn't persist.
+  if (dbView) {
+    editorRoot.innerHTML = "";
+    editorView = null; // already destroyed or never created
+    dbView = null;
+  }
+
   if (editorView && sameFile) {
     // Same file (e.g. external edit): patch content in-place to preserve undo history.
     const currentContent = editorView.state.doc.toString();
