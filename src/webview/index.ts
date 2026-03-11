@@ -10,7 +10,7 @@ import { languages } from "@codemirror/language-data";
 import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree } from "@codemirror/language";
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
-import type { ExtensionMessage, WebviewMessage, RecentFileEntry } from "../shared/messages";
+import type { ExtensionMessage, WebviewMessage, RecentFileEntry, OpenFileMessage } from "../shared/messages";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
 import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
@@ -45,9 +45,15 @@ let tagCount = 0;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const welcomeEl   = document.getElementById("welcome")    as HTMLDivElement;
-const pageEmojiEl = document.getElementById("page-emoji") as HTMLDivElement;
-const editorRoot  = document.getElementById("editor-root") as HTMLDivElement;
+const welcomeEl   = document.getElementById("welcome")      as HTMLDivElement;
+const pageEmojiEl = document.getElementById("page-emoji")   as HTMLDivElement;
+const editorRoot  = document.getElementById("editor-root")  as HTMLDivElement;
+const topbarEl    = document.getElementById("page-topbar")  as HTMLDivElement;
+
+// ── Navigation history ────────────────────────────────────────────────────────
+
+let backStack: string[] = [];
+let isBackNav = false;
 
 // ── Stylesheet injection ──────────────────────────────────────────────────────
 
@@ -109,28 +115,66 @@ const inlineCodePlugin = ViewPlugin.fromClass(
   { decorations: (v) => v.decorations },
 );
 
-// ── Code block line decoration ────────────────────────────────────────────────
+// ── Code block line decoration (with hidden fence markers) ────────────────────
 
-const codeBlockLineDeco = Decoration.line({ class: "cm-codeblock" });
+const codeBlockLineDeco  = Decoration.line({ class: "cm-codeblock" });
+const codeBlockFenceDeco = Decoration.line({ class: "cm-codeblock cm-codeblock-fence" });
+const hideDeco           = Decoration.replace({});
 
 function buildCodeBlockDecos(view: EditorView): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
-  const tree = syntaxTree(view.state);
-  for (const { from, to } of view.visibleRanges) {
-    let pos = from;
-    while (pos <= to) {
-      const line = view.state.doc.lineAt(pos);
-      let node = tree.resolveInner(line.from);
-      while (node) {
-        if (node.name === "FencedCode" || node.name === "CodeBlock") {
-          builder.add(line.from, line.from, codeBlockLineDeco);
-          break;
+  const { doc, selection } = view.state;
+  const cursor = selection.main;
+
+  for (const { from: rangeFrom, to: rangeTo } of view.visibleRanges) {
+    syntaxTree(view.state).iterate({
+      from: rangeFrom, to: rangeTo,
+      enter(node) {
+        if (node.name !== "FencedCode") return;
+
+        // Collect CodeMark children (open and close fence lines)
+        let openMarkLine: { from: number; to: number } | null = null;
+        let closeMarkLine: { from: number; to: number } | null = null;
+        let child = node.node.firstChild;
+        while (child) {
+          if (child.name === "CodeMark") {
+            const line = doc.lineAt(child.from);
+            if (!openMarkLine) openMarkLine = line;
+            else closeMarkLine = line;
+          }
+          child = child.nextSibling;
         }
-        if (!node.parent) break;
-        node = node.parent;
-      }
-      pos = line.to + 1;
-    }
+        // Unclosed block (no closing fence) — don't hide anything
+        if (!openMarkLine || !closeMarkLine) return false;
+
+        const cursorInBlock = cursor.from <= node.to && cursor.to >= node.from;
+
+        // Walk visible lines within this block
+        let pos = Math.max(node.from, rangeFrom);
+        const end = Math.min(node.to, rangeTo);
+        while (pos <= end) {
+          const line = doc.lineAt(pos);
+          const isFence = line.from === openMarkLine.from || line.from === closeMarkLine.from;
+
+          if (isFence) {
+            if (cursorInBlock) {
+              // Show fence line styled so user can edit it
+              builder.add(line.from, line.from, codeBlockFenceDeco);
+            } else {
+              // Hide fence line; eat newline too so no blank line remains
+              const hideEnd = line.to + 1 <= doc.length ? line.to + 1 : line.to;
+              builder.add(line.from, hideEnd, hideDeco);
+            }
+          } else {
+            builder.add(line.from, line.from, codeBlockLineDeco);
+          }
+
+          if (line.to >= end) break;
+          pos = line.to + 1;
+        }
+        return false; // don't recurse into children
+      },
+    });
   }
   return builder.finish();
 }
@@ -140,7 +184,8 @@ const codeBlockPlugin = ViewPlugin.fromClass(
     decorations: DecorationSet;
     constructor(view: EditorView) { this.decorations = buildCodeBlockDecos(view); }
     update(u: ViewUpdate) {
-      if (u.docChanged || u.viewportChanged) this.decorations = buildCodeBlockDecos(u.view);
+      if (u.docChanged || u.viewportChanged || u.selectionSet)
+        this.decorations = buildCodeBlockDecos(u.view);
     }
   },
   { decorations: (v) => v.decorations },
@@ -195,7 +240,6 @@ function createEditor(content: string): EditorView {
       ...createDecoratorExtensions(
         providers,
         (msg) => vscode.postMessage(msg),
-        (name) => currentFilePath.substring(0, currentFilePath.lastIndexOf("/") + 1) + name,
       ),
       autocompletion({ override: [componentMenuCompletionSource, createDecoratorCompletionSource(providers), emojiCompletionSource] }),
       updateListener,
@@ -221,10 +265,15 @@ window.addEventListener("message", (event: MessageEvent) => {
 function handleExtensionMessage(message: ExtensionMessage): void {
   switch (message.type) {
     case "openFile": {
+      if (!isBackNav && currentFilePath && currentFilePath !== message.path) {
+        backStack.push(currentFilePath);
+      }
+      isBackNav = false;
       const isSameFile = currentFilePath === message.path;
       currentFilePath = message.path;
       showDocument(message.content, isSameFile);
       updateEmojiHeader(message.content);
+      renderTopbar(message);
       break;
     }
     case "fileIndex":
@@ -293,6 +342,76 @@ function showDocument(content: string, sameFile = false): void {
   editorView?.focus();
 }
 
+// ── Top bar ───────────────────────────────────────────────────────────────────
+
+function fmtDate(ms: number): string {
+  if (!ms) return "";
+  return new Date(ms).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
+}
+
+function countWords(content: string): number {
+  const stripped = content.replace(/^#{1,6}\s+/gm, "").replace(/[*_`]/g, "").trim();
+  return stripped ? stripped.split(/\s+/).length : 0;
+}
+
+function renderTopbar(msg: OpenFileMessage): void {
+  const words = countWords(msg.content);
+  const modified = fmtDate(msg.modifiedAt);
+  const created = fmtDate(msg.createdAt);
+
+  const breadcrumbHtml = msg.breadcrumb.length
+    ? `<span class="topbar-breadcrumb">${msg.breadcrumb.map(escapeHtml).join(" / ")}</span>`
+    : "";
+
+  const metaParts: string[] = [];
+  if (words > 0) metaParts.push(`${words} words`);
+  if (modified) metaParts.push(`modified ${modified}`);
+  if (created && created !== modified) metaParts.push(`created ${created}`);
+
+  const chipHtml = (fsPath: string, displayName: string, emoji: string | null) =>
+    `<button class="topbar-chip" data-path="${escapeAttr(fsPath)}">${emoji ? emoji + " " : ""}${escapeHtml(displayName)}</button>`;
+
+  const backlinkChips = msg.backlinks.map((l) => chipHtml(l.fsPath, l.displayName, l.emoji)).join("");
+  const outChips = msg.outgoingLinks.map((l) => chipHtml(l.fsPath, l.displayName, l.emoji)).join("");
+
+  const hasLinks = msg.backlinks.length > 0 || msg.outgoingLinks.length > 0;
+  const linksRow = hasLinks ? `
+    <div class="topbar-row topbar-links-row">
+      ${msg.backlinks.length > 0 ? `<span class="topbar-links-label">← refs</span><div class="topbar-chips">${backlinkChips}</div>` : ""}
+      ${msg.backlinks.length > 0 && msg.outgoingLinks.length > 0 ? `<span class="topbar-links-sep"></span>` : ""}
+      ${msg.outgoingLinks.length > 0 ? `<span class="topbar-links-label">→ links</span><div class="topbar-chips">${outChips}</div>` : ""}
+    </div>` : "";
+
+  topbarEl.innerHTML = `
+    <div class="topbar-row topbar-nav-row">
+      <button id="topbar-home" class="topbar-back-btn" title="Home">◈</button>
+      <button id="topbar-back" class="topbar-back-btn" ${backStack.length === 0 ? "disabled" : ""} title="Go back">←</button>
+      ${breadcrumbHtml}
+      <span class="topbar-spacer"></span>
+      ${metaParts.length ? `<span class="topbar-meta">${metaParts.join(" · ")}</span>` : ""}
+      <button id="topbar-new" class="topbar-new-btn" title="New page">+</button>
+    </div>
+    ${linksRow}
+  `;
+  topbarEl.style.display = "block";
+
+  document.getElementById("topbar-home")?.addEventListener("click", () => showHome());
+  document.getElementById("topbar-back")?.addEventListener("click", () => {
+    const prev = backStack.pop();
+    if (prev) { isBackNav = true; vscode.postMessage({ type: "requestFile", path: prev }); }
+  });
+  document.getElementById("topbar-new")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "createFile" });
+  });
+
+  topbarEl.querySelectorAll<HTMLElement>(".topbar-chip").forEach((chip) => {
+    chip.addEventListener("click", () => {
+      const p = chip.dataset.path;
+      if (p) vscode.postMessage({ type: "requestFile", path: p });
+    });
+  });
+}
+
 // ── Home screen ───────────────────────────────────────────────────────────────
 
 function isOnHome(): boolean {
@@ -303,7 +422,10 @@ function showHome(): void {
   welcomeEl.style.display = "block";
   editorRoot.style.display = "none";
   pageEmojiEl.style.display = "none";
+  topbarEl.style.display = "none";
   currentFilePath = "";
+  backStack = [];
+  isBackNav = false;
   renderHomeScreen();
 }
 

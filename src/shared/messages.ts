@@ -4,10 +4,18 @@
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
+/** A resolved link to another page. */
+export interface PageLink {
+  displayName: string;
+  fsPath: string;        // absolute filesystem path (use with requestFile)
+  emoji: string | null;
+}
+
 /** Metadata for one page, sent as part of FileIndexMessage. */
 export interface PageInfo {
-  filename: string;      // "1 Getting Started.md"
-  displayName: string;   // H1 text (no emoji prefix, no numeric ID)
+  id: string | null;     // 8-char hex UUID (used to form stable @[uuid] links)
+  filename: string;      // "a3f2bc1d Getting Started.md"
+  displayName: string;   // H1 text (no emoji prefix, no UUID prefix)
   emoji: string | null;  // leading emoji from H1, if any
 }
 
@@ -26,6 +34,11 @@ export interface OpenFileMessage {
   path: string;
   content: string;
   webviewBaseUri: string;
+  backlinks: PageLink[];
+  outgoingLinks: PageLink[];
+  createdAt: number;     // ms timestamp (0 if unavailable)
+  modifiedAt: number;    // ms timestamp
+  breadcrumb: string[];  // folder names between workspace root and file
 }
 
 export interface FileIndexMessage {

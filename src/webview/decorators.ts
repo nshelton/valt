@@ -20,11 +20,11 @@ import { formatDate } from "./decoratorProviders";
 import type { WebviewMessage } from "../shared/messages";
 
 // ── Regex ─────────────────────────────────────────────────────────────────────
-// Priority: tag > bracket-file > simple-file > full-timestamp > quoted datetime > bare word datetime
+// Priority: tag > uuid-link > full-timestamp > quoted datetime > bare word datetime
 // The full-timestamp pattern must come before word so "@2026-03-08 14:32" is
 // captured as one token rather than "@2026-03-08" + orphan " 14:32".
 const DECORATOR_PATTERN =
-  /(?<tag>@tag\((?<tagLabel>[^)]*)\))|(?<bracket>@\[(?<bracketFile>[^\]]+)\])|(?<file>@(?<fileName>[\w.-]+\.md))|(?<ts>@(?<tsText>\d{4}-\d{2}-\d{2} \d{2}:\d{2}))|(?<quoted>@"(?<phrase>[^"]*)")|(?<word>@(?<wordText>[\w-]+))/g;
+  /(?<tag>@tag\((?<tagLabel>[^)]*)\))|(?<bracket>@\[(?<bracketFile>[0-9a-f]{8})\])|(?<ts>@(?<tsText>\d{4}-\d{2}-\d{2} \d{2}:\d{2}))|(?<quoted>@"(?<phrase>[^"]*)")|(?<word>@(?<wordText>[\w-]+))/g;
 
 // ── Generic widget ────────────────────────────────────────────────────────────
 
@@ -47,6 +47,8 @@ class DecoratorWidget extends WidgetType {
 
 // ── Decoration builder ────────────────────────────────────────────────────────
 
+const HEADING_RE = /^(#{1,6}) /;
+
 function buildDecorations(view: EditorView, providers: DecoratorProvider[]): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   const { from: curFrom, to: curTo } = view.state.selection.main;
@@ -60,7 +62,10 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
       re.lastIndex = 0;
       let match: RegExpExecArray | null;
 
-      while ((match = DECORATOR_PATTERN.exec(line.text)) !== null) {
+      const headingMatch = HEADING_RE.exec(line.text);
+      const headingClass = headingMatch ? ` cm-deco-h${headingMatch[1].length}` : "";
+
+      while ((match = re.exec(line.text)) !== null) {
         const mFrom = line.from + match.index;
         const mTo = mFrom + match[0].length;
 
@@ -84,16 +89,17 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
         if (!spec) continue;
 
         const cursorInside = curFrom <= mTo && curTo >= mFrom;
+        const cssClass = spec.cssClass + headingClass;
 
         if (spec.isReplace) {
           // Replace widgets: revert to raw text when cursor is inside for editing
           if (cursorInside) continue;
           builder.add(mFrom, mTo, Decoration.replace({
-            widget: new DecoratorWidget(spec.displayText, spec.cssClass),
+            widget: new DecoratorWidget(spec.displayText, cssClass),
           }));
         } else {
           // Mark decorations: always render — styling persists even while editing
-          builder.add(mFrom, mTo, Decoration.mark({ class: spec.cssClass, attributes: spec.attributes }));
+          builder.add(mFrom, mTo, Decoration.mark({ class: cssClass, attributes: spec.attributes }));
         }
       }
 
@@ -110,7 +116,6 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
 function createDecoratorPlugin(
   providers: DecoratorProvider[],
   postMessage: (msg: WebviewMessage) => void,
-  resolveFile: (name: string) => string,
 ) {
   return ViewPlugin.fromClass(
     class {
@@ -135,20 +140,14 @@ function createDecoratorPlugin(
           const pos = view.posAtCoords({ x: event.clientX, y: event.clientY });
           if (pos == null) return false;
           const line = view.state.doc.lineAt(pos);
-          // Match @[anything] (display-name or filename.md) and @simple.md
-          const fileRe = /@\[([^\]]+)\]|@([\w.-]+\.md)/g;
+          // Match @[8hex] UUID links
+          const fileRe = /@\[([0-9a-f]{8})\]/g;
           let m: RegExpExecArray | null;
           while ((m = fileRe.exec(line.text)) !== null) {
             const from = line.from + m.index;
             const to = from + m[0].length;
             if (pos >= from && pos <= to) {
-              const linkText = m[1] ?? m[2]; // bracket content or simple filename
-              // For .md links use the directory-relative path resolver;
-              // for bare display names pass through to extension for index lookup.
-              const resolved = linkText.endsWith(".md")
-                ? resolveFile(linkText)
-                : linkText;
-              postMessage({ type: "requestFile", path: resolved });
+              postMessage({ type: "requestFile", path: m[1] });
               return true;
             }
           }
@@ -229,10 +228,9 @@ const datetimeReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
 export function createDecoratorExtensions(
   providers: DecoratorProvider[],
   postMessage: (msg: WebviewMessage) => void,
-  resolveFile: (name: string) => string,
 ): Extension[] {
   return [
-    createDecoratorPlugin(providers, postMessage, resolveFile),
+    createDecoratorPlugin(providers, postMessage),
     datetimeReplacer,
   ];
 }

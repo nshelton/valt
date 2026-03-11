@@ -26,14 +26,31 @@ export abstract class DecoratorProvider {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 const DAY_NAMES = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
 
+/** ISO format stored in document: YYYY-MM-DD or YYYY-MM-DD HH:MM */
 function formatDate(d: Date): string {
-  const dateStr = `${DAY_NAMES[d.getDay()]} ${MONTH_NAMES[d.getMonth()]} ${d.getDate()}`;
+  const yyyy = d.getFullYear();
+  const mo = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
   const h = d.getHours(), m = d.getMinutes();
+  const dateStr = `${yyyy}-${mo}-${dd}`;
   // chrono-node defaults to 12:00 for date-only phrases; treat that as no time
   if ((h === 0 && m === 0) || (h === 12 && m === 0)) return dateStr;
-  return `${dateStr} ${d.toTimeString().slice(0, 5)}`;
+  return `${dateStr} ${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`;
+}
+
+/** Human-readable format for display widgets: Mon March 3, 2026 4:56PM */
+function formatDateDisplay(d: Date): string {
+  const day = DAY_NAMES[d.getDay()];
+  const month = MONTH_NAMES[d.getMonth()];
+  const dateStr = `${day} ${month} ${d.getDate()}, ${d.getFullYear()}`;
+  const h = d.getHours(), m = d.getMinutes();
+  if ((h === 0 && m === 0) || (h === 12 && m === 0)) return dateStr;
+  const hour12 = h % 12 || 12;
+  const ampm = h < 12 ? "AM" : "PM";
+  return `${dateStr} ${hour12}:${String(m).padStart(2, "0")}${ampm}`;
 }
 
 // Exported so the @now replacer can reuse it.
@@ -58,9 +75,9 @@ export class DateTimeProvider extends DecoratorProvider {
     const d = chrono.parseDate(afterAt, new Date());
     if (!d) return null;
     return {
-      displayText: "@" + formatDate(d),
+      displayText: "@" + formatDateDisplay(d),
       cssClass: "cm-decorator cm-decorator-now",
-      isReplace: false,
+      isReplace: true,
     };
   }
 
@@ -71,7 +88,7 @@ export class DateTimeProvider extends DecoratorProvider {
     const nowCompletion: Completion = {
       label: "@now",
       type: "keyword",
-      detail: formatDate(new Date()),
+      detail: formatDateDisplay(new Date()),
       apply: (view: EditorView, _: Completion, from: number, to: number) => {
         view.dispatch({ changes: { from, to, insert: "@" + formatDate(new Date()) } });
       },
@@ -86,7 +103,7 @@ export class DateTimeProvider extends DecoratorProvider {
         return {
           label,
           type: "keyword",
-          detail: d ? formatDate(d) : undefined,
+          detail: d ? formatDateDisplay(d) : undefined,
           apply: (view: EditorView, _: Completion, from: number, to: number) => {
             view.dispatch({ changes: { from, to, insert: resolved } });
           },
@@ -104,64 +121,54 @@ export class DateTimeProvider extends DecoratorProvider {
 // ── Page provider ─────────────────────────────────────────────────────────────
 
 export interface PageInfo {
+  id: string | null;
   filename: string;
   displayName: string;
   emoji: string | null;
 }
 
 export class PageProvider extends DecoratorProvider {
-  /** displayName.toLowerCase() → PageInfo */
-  private pageMap: Map<string, PageInfo> = new Map();
-  /** Raw filename set for backward-compat @filename.md links */
-  private fileSet = new Set<string>();
+  /** uuid → PageInfo */
+  private byId: Map<string, PageInfo> = new Map();
+  /** displayName.toLowerCase() → PageInfo (for legacy link compat) */
+  private byName: Map<string, PageInfo> = new Map();
 
   setPages(pages: PageInfo[]): void {
-    this.pageMap.clear();
-    this.fileSet.clear();
+    this.byId.clear();
+    this.byName.clear();
     for (const p of pages) {
-      this.pageMap.set(p.displayName.toLowerCase(), p);
-      this.fileSet.add(p.filename);
+      if (p.id) this.byId.set(p.id, p);
+      this.byName.set(p.displayName.toLowerCase(), p);
     }
   }
 
   tryMatch(afterAt: string): DecoratorSpec | null {
-    // New style: @[Display Name] — bracket content without .md
-    if (!afterAt.endsWith(".md")) {
-      const page = this.pageMap.get(afterAt.toLowerCase());
-      if (!page) return null;
-      const display = page.emoji ? `${page.emoji} ${page.displayName}` : page.displayName;
-      return {
-        displayText: display,
-        cssClass: "cm-decorator-file",
-        isReplace: false,
-      };
-    }
-
-    // Legacy style: @[filename.md] or @simple.md — match by raw filename
-    if (this.fileSet.has(afterAt)) {
-      // Strip leading `[id] ` prefix for display
-      const stem = afterAt.replace(/\.md$/, "").replace(/^\d+\s+/, "").trim();
-      return {
-        displayText: stem || afterAt,
-        cssClass: "cm-decorator-file",
-        isReplace: false,
-      };
-    }
-
-    return null;
+    // UUID link: @[a3f2bc1d] — 8 hex chars
+    if (!/^[0-9a-f]{8}$/.test(afterAt)) return null;
+    const page = this.byId.get(afterAt);
+    if (!page) return null;
+    const display = page.emoji ? `${page.emoji} ${page.displayName}` : page.displayName;
+    return { displayText: display, cssClass: "cm-decorator-file", isReplace: false };
   }
 
   completions(query: string): Completion[] {
-    // query may start with "[" when triggered from the bracket @[ matcher
     const isBracket = query.startsWith("[");
     const q = (isBracket ? query.slice(1) : query).toLowerCase();
 
-    return [...this.pageMap.values()]
+    return [...this.byName.values()]
       .filter((p) => p.displayName.toLowerCase().includes(q))
       .map((p): Completion => {
-        const label = `@[${p.displayName}]`;
-        const detail = p.emoji ?? undefined;
-        return { label, type: "file", detail };
+        const displayLabel = p.emoji ? `${p.emoji} ${p.displayName}` : p.displayName;
+        return {
+          label: `@[${displayLabel}]`,
+          type: "file",
+          detail: p.emoji ?? undefined,
+          apply: (view, _, from, to) => {
+            // Insert UUID link — stable, never goes stale on rename
+            const insert = p.id ? `@[${p.id}]` : `@[${p.displayName}]`;
+            view.dispatch({ changes: { from, to, insert } });
+          },
+        };
       });
   }
 }

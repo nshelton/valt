@@ -4,21 +4,25 @@ import * as fs from "fs";
 import { ValtTreeProvider } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
 import { FavoritesTreeProvider } from "./favoritesProvider";
-import { PageIndex, rewriteLinks, extractTitle, extractEmoji } from "./pageIndex";
-import type { RecentFileEntry } from "./shared/messages";
+import { PageIndex, generateId, extractTitle, extractEmoji, extractPageLinks } from "./pageIndex";
+import type { RecentFileEntry, PageLink } from "./shared/messages";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
-let panel: vscode.WebviewPanel | undefined;
+// panels[panels.length - 1] is always the most-recently-focused panel.
+let panels: vscode.WebviewPanel[] = [];
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 let favoritesProvider: FavoritesTreeProvider | undefined;
 const pageIndex = new PageIndex();
-let webviewReady = false;
 let extensionContext: vscode.ExtensionContext | undefined;
 
-// File queued to open as soon as the webview sends its `ready` handshake.
-// Needed because the panel may not have finished loading when valt.openFile fires.
-let pendingFile: string | undefined;
+function getActivePanel(): vscode.WebviewPanel | undefined {
+  return panels[panels.length - 1];
+}
+
+function broadcastToAll(msg: ExtensionMessage): void {
+  for (const p of panels) p.webview.postMessage(msg);
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
@@ -48,21 +52,22 @@ export function activate(context: vscode.ExtensionContext): void {
     showCollapseAll: true,
   });
 
+  // valt.open — create a new panel. First time: ViewColumn.One, subsequent: Beside.
   const openCmd = vscode.commands.registerCommand("valt.open", () => {
-    openValtPanel(context);
+    const column = panels.length === 0 ? vscode.ViewColumn.One : vscode.ViewColumn.Beside;
+    createValtPanel(context, column);
   });
 
+  // valt.openFile — called by sidebar tree items. Targets the active panel.
   const openFileCmd = vscode.commands.registerCommand(
     "valt.openFile",
     (filePath: string) => {
-      if (panel) {
-        // Panel is already open and the webview is ready — send immediately.
-        panel.reveal(vscode.ViewColumn.One);
-        sendFileToWebview(filePath);
+      const active = getActivePanel();
+      if (active) {
+        active.reveal(active.viewColumn ?? vscode.ViewColumn.One);
+        sendFileTo(filePath, active);
       } else {
-        // Panel is being created; the webview will request the file on `ready`.
-        pendingFile = filePath;
-        openValtPanel(context);
+        createValtPanel(context, vscode.ViewColumn.One, filePath);
       }
     }
   );
@@ -72,11 +77,12 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const showHomeCmd = vscode.commands.registerCommand("valt.showHome", () => {
-    if (panel) {
-      panel.reveal(vscode.ViewColumn.One);
-      panel.webview.postMessage({ type: "showHome" } satisfies ExtensionMessage);
+    const active = getActivePanel();
+    if (active) {
+      active.reveal(active.viewColumn ?? vscode.ViewColumn.One);
+      active.webview.postMessage({ type: "showHome" } satisfies ExtensionMessage);
     } else {
-      openValtPanel(context);
+      createValtPanel(context, vscode.ViewColumn.One);
     }
   });
 
@@ -89,36 +95,24 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
 
-  const newFolderCmd = vscode.commands.registerCommand(
-    "valt.newFolder",
-    async (item?: { fsPath?: string; isDirectory?: boolean }) => {
+  const newSubPageCmd = vscode.commands.registerCommand(
+    "valt.newSubPage",
+    (item?: { fsPath?: string }) => {
       const root = getWorkspaceRoot();
       if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
-      const parentDir = item?.fsPath
-        ? item.isDirectory ? item.fsPath : path.dirname(item.fsPath)
-        : root;
-      const name = await vscode.window.showInputBox({ prompt: "New folder name", placeHolder: "My Folder" });
-      if (!name?.trim()) return;
-      const folderPath = path.join(parentDir, name.trim());
-      try {
-        fs.mkdirSync(folderPath, { recursive: true });
-      } catch {
-        vscode.window.showErrorMessage(`Valt: Could not create folder "${name}"`);
-        return;
-      }
-      treeProvider?.refresh();
-    }
-  );
 
-  const newPageInFolderCmd = vscode.commands.registerCommand(
-    "valt.newPageInFolder",
-    (item?: { fsPath?: string; isDirectory?: boolean }) => {
-      const root = getWorkspaceRoot();
-      if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
-      const targetDir = item?.fsPath
-        ? item.isDirectory ? item.fsPath : path.dirname(item.fsPath)
-        : root;
-      const id = pageIndex.nextId();
+      let targetDir: string;
+      if (item?.fsPath) {
+        const stem = path.basename(item.fsPath, ".md");
+        targetDir = path.join(path.dirname(item.fsPath), stem);
+        if (!fs.existsSync(targetDir)) {
+          fs.mkdirSync(targetDir, { recursive: true });
+        }
+      } else {
+        targetDir = root;
+      }
+
+      const id = generateId();
       const filePath = path.join(targetDir, `${id} Untitled.md`);
       const content = "# Untitled\n\n";
       fs.writeFileSync(filePath, content, "utf8");
@@ -130,14 +124,12 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   );
 
-  // Rebuild tag index when config changes (tag colors updated)
   const cfgWatcher = vscode.workspace.onDidChangeConfiguration((e) => {
     if (e.affectsConfiguration("valt.tagColors")) {
       tagTreeProvider?.refresh();
     }
   });
 
-  // Watch for external file changes (git checkout, other tools)
   const mdWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   const debouncedRebuild = () => {
@@ -158,11 +150,10 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push(
     favoritesTreeView, fileTreeView, tagTreeView,
     openCmd, openFileCmd, refreshCmd, showHomeCmd, setTagColorCmd,
-    newFolderCmd, newPageInFolderCmd, removeFavoriteCmd,
+    newSubPageCmd, removeFavoriteCmd,
     cfgWatcher, mdWatcher,
   );
 
-  // Build indexes eagerly so trees are populated before a file is opened
   rebuildIndexes();
 }
 
@@ -170,16 +161,15 @@ export function deactivate(): void {}
 
 // ── Panel ─────────────────────────────────────────────────────────────────────
 
-function openValtPanel(context: vscode.ExtensionContext): void {
-  if (panel) {
-    panel.reveal(vscode.ViewColumn.One);
-    return;
-  }
-
-  panel = vscode.window.createWebviewPanel(
+function createValtPanel(
+  context: vscode.ExtensionContext,
+  viewColumn: vscode.ViewColumn,
+  pendingFilePath?: string,
+): void {
+  const p = vscode.window.createWebviewPanel(
     "valt",
     "Valt",
-    vscode.ViewColumn.One,
+    viewColumn,
     {
       enableScripts: true,
       localResourceRoots: [
@@ -190,18 +180,38 @@ function openValtPanel(context: vscode.ExtensionContext): void {
     }
   );
 
-  panel.webview.html = buildWebviewHtml(panel.webview, context);
+  p.webview.html = buildWebviewHtml(p.webview, context);
+  panels.push(p);
 
-  panel.webview.onDidReceiveMessage(
-    (raw: unknown) => handleWebviewMessage(raw as WebviewMessage),
+  // Per-panel state (in closure)
+  let pending = pendingFilePath;
+
+  p.webview.onDidReceiveMessage(
+    (raw: unknown) => {
+      const message = raw as WebviewMessage;
+      if (message.type === "ready") {
+        sendFileIndexTo(p);
+        sendTagIndexTo(p);
+        sendRecentFilesTo(p);
+        if (pending) { sendFileTo(pending, p); pending = undefined; }
+      } else {
+        handleWebviewMessage(message, p);
+      }
+    },
     undefined,
     context.subscriptions
   );
 
-  panel.onDidDispose(() => {
-    panel = undefined;
-    webviewReady = false;
-    pendingFile = undefined;
+  p.onDidChangeViewState((e) => {
+    if (e.webviewPanel.active) {
+      // Move to end of array so getActivePanel() returns this one.
+      panels = panels.filter((x) => x !== p);
+      panels.push(p);
+    }
+  }, undefined, context.subscriptions);
+
+  p.onDidDispose(() => {
+    panels = panels.filter((x) => x !== p);
   }, undefined, context.subscriptions);
 }
 
@@ -229,6 +239,7 @@ function buildWebviewHtml(
 </head>
 <body>
   <div id="app">
+    <div id="page-topbar" style="display:none;"></div>
     <div id="content">
       <div id="welcome">
         <h1>Valt</h1>
@@ -245,63 +256,83 @@ function buildWebviewHtml(
 
 // ── Message handlers ──────────────────────────────────────────────────────────
 
-function handleWebviewMessage(message: WebviewMessage): void {
+function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPanel): void {
   switch (message.type) {
-    case "ready":
-      webviewReady = true;
-      sendFileIndex();
-      sendTagIndex();
-      sendRecentFiles();
-      if (pendingFile) {
-        sendFileToWebview(pendingFile);
-        pendingFile = undefined;
-      }
-      break;
     case "requestFile":
-      handleRequestFile(message.path);
+      handleRequestFile(message.path, source);
       break;
     case "saveFile":
       handleSaveFile(message.filePath, message.content);
       break;
     case "createFile":
-      handleCreateFile();
+      handleCreateFile(source);
       break;
     case "createDailyNote":
-      handleCreateDailyNote();
+      handleCreateDailyNote(source);
       break;
   }
 }
 
-function handleRequestFile(pathOrName: string): void {
+function handleRequestFile(pathOrName: string, target: vscode.WebviewPanel): void {
   // Absolute path that exists → open directly
   if (path.isAbsolute(pathOrName) && fs.existsSync(pathOrName)) {
-    sendFileToWebview(pathOrName);
+    sendFileTo(pathOrName, target);
     return;
   }
 
-  // Try display-name lookup in page index
+  // UUID link: 8 lowercase hex chars → stable lookup, never stale
+  if (/^[0-9a-f]{8}$/.test(pathOrName)) {
+    const entry = pageIndex.getById(pathOrName);
+    if (entry) { sendFileTo(entry.fsPath, target); return; }
+  }
+
+  // Legacy display-name lookup
   const entry = pageIndex.getByDisplayName(pathOrName);
-  if (entry) {
-    sendFileToWebview(entry.fsPath);
-    return;
-  }
+  if (entry) { sendFileTo(entry.fsPath, target); return; }
 
-  // Fallback: search workspace for a file with that basename
+  // Fallback: workspace search
   vscode.workspace.findFiles(`**/${pathOrName}`, "**/node_modules/**").then((uris) => {
-    if (uris.length > 0) sendFileToWebview(uris[0].fsPath);
+    if (uris.length > 0) sendFileTo(uris[0].fsPath, target);
     else vscode.window.showWarningMessage(`Valt: Could not find page "${pathOrName}"`);
   });
 }
 
-function sendFileToWebview(filePath: string): void {
-  if (!panel) return;
-
+// Send a file to a specific panel.
+function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
   try {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
-    const webviewBaseUri = panel.webview.asWebviewUri(dirUri).toString();
-    const msg: ExtensionMessage = { type: "openFile", path: filePath, content, webviewBaseUri };
-    panel.webview.postMessage(msg);
+    const webviewBaseUri = target.webview.asWebviewUri(dirUri).toString();
+
+    const backlinks: PageLink[] = pageIndex.getLinkers(filePath).map((p) => {
+      const e = pageIndex.getByPath(p);
+      return { displayName: e?.displayName ?? path.basename(p, ".md"), fsPath: p, emoji: e?.emoji ?? null };
+    });
+
+    const outgoingLinks: PageLink[] = extractPageLinks(content).flatMap((uuid) => {
+      const e = pageIndex.getById(uuid);
+      return e ? [{ displayName: e.displayName, fsPath: e.fsPath, emoji: e.emoji }] : [];
+    });
+
+    let createdAt = 0;
+    let modifiedAt = 0;
+    try {
+      const stat = fs.statSync(filePath);
+      createdAt = stat.birthtimeMs;
+      modifiedAt = stat.mtimeMs;
+    } catch { /* ignore */ }
+
+    const root = getWorkspaceRoot();
+    const rel = root ? path.relative(root, path.dirname(filePath)) : "";
+    const breadcrumb = rel
+      ? rel.split(path.sep).filter(Boolean).map((seg) => seg.replace(/^[0-9a-f]{8}\s+/, ""))
+      : [];
+
+    const msg: ExtensionMessage = {
+      type: "openFile", path: filePath, content, webviewBaseUri,
+      backlinks, outgoingLinks, createdAt, modifiedAt, breadcrumb,
+    };
+    target.webview.postMessage(msg);
     pushRecent(filePath);
     sendRecentFiles();
   } catch {
@@ -309,16 +340,17 @@ function sendFileToWebview(filePath: string): void {
   }
 }
 
-function sendFileIndex(): void {
-  if (!panel) return;
-  panel.webview.postMessage({
-    type: "fileIndex",
-    pages: pageIndex.toPageInfos(),
-  } satisfies ExtensionMessage);
+// Convenience: send to the active panel (sidebar file-opens, new page creation, etc.)
+function sendFileToWebview(filePath: string): void {
+  const active = getActivePanel();
+  if (active) sendFileTo(filePath, active);
 }
 
-function sendTagIndex(): void {
-  if (!panel) return;
+function sendFileIndexTo(p: vscode.WebviewPanel): void {
+  p.webview.postMessage({ type: "fileIndex", pages: pageIndex.toPageInfos() } satisfies ExtensionMessage);
+}
+
+function sendTagIndexTo(p: vscode.WebviewPanel): void {
   const index = tagTreeProvider ? [...tagTreeProvider.getIndex().entries()] : [];
   const tags: Record<string, string[]> = {};
   const colors: Record<string, string> = {};
@@ -326,8 +358,30 @@ function sendTagIndex(): void {
     tags[tag] = files.map((f) => path.basename(f));
     if (tagTreeProvider) colors[tag] = tagTreeProvider.colorFor(tag);
   }
-  panel.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
+  p.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
 }
+
+function sendRecentFilesTo(p: vscode.WebviewPanel): void {
+  const paths: string[] = extensionContext?.globalState.get("valt.recentFiles", []) ?? [];
+  const files: RecentFileEntry[] = [];
+  for (const fp of paths) {
+    try {
+      const content = fs.readFileSync(fp, "utf8");
+      const entry = pageIndex.getByPath(fp);
+      files.push({
+        path: fp,
+        displayName: entry?.displayName ?? extractTitle(content),
+        emoji: entry?.emoji ?? extractEmoji(content),
+        preview: extractPreview(content),
+      });
+    } catch { /* file deleted — skip */ }
+  }
+  p.webview.postMessage({ type: "recentFiles", files } satisfies ExtensionMessage);
+}
+
+function sendFileIndex(): void { for (const p of panels) sendFileIndexTo(p); }
+function sendTagIndex(): void  { for (const p of panels) sendTagIndexTo(p); }
+function sendRecentFiles(): void { for (const p of panels) sendRecentFilesTo(p); }
 
 function handleSaveFile(filePath: string, content: string): void {
   try {
@@ -337,17 +391,11 @@ function handleSaveFile(filePath: string, content: string): void {
     return;
   }
 
-  // Check if a rename is needed (new H1 → new canonical filename)
   const renameResult = pageIndex.computeRename(filePath, content);
 
   if (renameResult.needsRename) {
-    const { newPath, newFilename, oldDisplayName } = renameResult;
+    const { newPath, newFilename } = renameResult;
 
-    // Collect linkers before the rename so we can update their content
-    const linkers = pageIndex.getLinkers(filePath);
-    const newDisplayName = path.basename(newPath, ".md").replace(/^\d+\s+/, "");
-
-    // Rename the file on disk
     try {
       fs.renameSync(filePath, newPath);
     } catch {
@@ -359,29 +407,20 @@ function handleSaveFile(filePath: string, content: string): void {
       return;
     }
 
-    // Commit rename in index
-    pageIndex.commitRename(filePath, newPath, content);
-
-    // Update all files that linked to the old display name
-    for (const linkerPath of linkers) {
-      try {
-        const linkerContent = fs.readFileSync(linkerPath, "utf8");
-        const updated = rewriteLinks(linkerContent, oldDisplayName, newDisplayName);
-        if (updated !== linkerContent) {
-          fs.writeFileSync(linkerPath, updated, "utf8");
-          pageIndex.updateEntry(linkerPath, updated);
-        }
-      } catch {
-        // Best-effort link rewrite; skip unreadable files
-      }
+    // Also rename the sibling children folder if it exists
+    const oldStem = path.basename(filePath, ".md");
+    const newStem = path.basename(newPath, ".md");
+    const oldSiblingDir = path.join(path.dirname(filePath), oldStem);
+    const newSiblingDir = path.join(path.dirname(newPath), newStem);
+    if (fs.existsSync(oldSiblingDir) && fs.statSync(oldSiblingDir).isDirectory()) {
+      try { fs.renameSync(oldSiblingDir, newSiblingDir); } catch { /* best-effort */ }
     }
 
-    // Notify webview that the current file was renamed
-    panel?.webview.postMessage({
-      type: "fileRenamed",
-      oldPath: filePath,
-      newPath,
-    } satisfies ExtensionMessage);
+    // UUID links in other files remain valid — no rewrite needed
+    pageIndex.commitRename(filePath, newPath, content);
+
+    // Broadcast rename to all panels (each ignores it if not showing that file)
+    broadcastToAll({ type: "fileRenamed", oldPath: filePath, newPath } satisfies ExtensionMessage);
   }
 
   updateTagIndexForFile(renameResult.needsRename ? renameResult.newPath : filePath, content);
@@ -423,31 +462,12 @@ function extractPreview(content: string): string {
   return result.join("  ·  ").slice(0, 180);
 }
 
-function sendRecentFiles(): void {
-  if (!panel) return;
-  const paths: string[] = extensionContext?.globalState.get("valt.recentFiles", []) ?? [];
-  const files: RecentFileEntry[] = [];
-  for (const p of paths) {
-    try {
-      const content = fs.readFileSync(p, "utf8");
-      const entry = pageIndex.getByPath(p);
-      files.push({
-        path: p,
-        displayName: entry?.displayName ?? extractTitle(content),
-        emoji: entry?.emoji ?? extractEmoji(content),
-        preview: extractPreview(content),
-      });
-    } catch { /* file deleted — skip */ }
-  }
-  panel.webview.postMessage({ type: "recentFiles", files } satisfies ExtensionMessage);
-}
-
 // ── Page creation ─────────────────────────────────────────────────────────────
 
-function handleCreateFile(): void {
+function handleCreateFile(target: vscode.WebviewPanel): void {
   const root = getWorkspaceRoot();
   if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
-  const id = pageIndex.nextId();
+  const id = generateId();
   const filePath = path.join(root, `${id} Untitled.md`);
   const content = "# Untitled\n\n";
   fs.writeFileSync(filePath, content, "utf8");
@@ -455,18 +475,17 @@ function handleCreateFile(): void {
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
   sendFileIndex();
-  sendFileToWebview(filePath);
+  sendFileTo(filePath, target);
 }
 
-function handleCreateDailyNote(): void {
+function handleCreateDailyNote(target: vscode.WebviewPanel): void {
   const root = getWorkspaceRoot();
   if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
   const today = new Date();
   const dateStr = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, "0")}-${String(today.getDate()).padStart(2, "0")}`;
-  // If a page with today's date as display name already exists, open it
   const existing = pageIndex.getByDisplayName(dateStr);
-  if (existing) { sendFileToWebview(existing.fsPath); return; }
-  const id = pageIndex.nextId();
+  if (existing) { sendFileTo(existing.fsPath, target); return; }
+  const id = generateId();
   const filePath = path.join(root, `${id} ${dateStr}.md`);
   const content = `# ${dateStr}\n\n`;
   fs.writeFileSync(filePath, content, "utf8");
@@ -474,7 +493,7 @@ function handleCreateDailyNote(): void {
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
   sendFileIndex();
-  sendFileToWebview(filePath);
+  sendFileTo(filePath, target);
 }
 
 // ── Tag index ─────────────────────────────────────────────────────────────────
@@ -496,7 +515,6 @@ async function rebuildIndexes(): Promise<void> {
   const tagIdx: TagIndex = new Map();
   const pageFiles: { fsPath: string; content: string }[] = [];
 
-  // Read files in parallel batches to avoid blocking the extension host
   const BATCH_SIZE = 50;
   for (let i = 0; i < uris.length; i += BATCH_SIZE) {
     const batch = uris.slice(i, i + BATCH_SIZE);
@@ -521,21 +539,16 @@ async function rebuildIndexes(): Promise<void> {
   favoritesProvider?.setPageIndex(pageIndex);
 }
 
-// Keep for incremental tag updates on save
 function updateTagIndexForFile(filePath: string, content: string): void {
   if (!tagTreeProvider) return;
   const index: TagIndex = tagTreeProvider.getIndex();
-
-  // Remove this file from all existing tags
   for (const files of index.values()) {
     const i = files.indexOf(filePath);
     if (i >= 0) files.splice(i, 1);
   }
-  // Clean up empty tags
   for (const [tag, files] of index) {
     if (files.length === 0) index.delete(tag);
   }
-  // Re-scan and add
   buildTagIndexFromContent(filePath, content, index);
   tagTreeProvider.setIndex(index);
   sendTagIndex();

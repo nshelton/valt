@@ -36,12 +36,8 @@
         "title": "Set Tag Color"
       },
       {
-        "command": "valt.newFolder",
-        "title": "Add Folder"
-      },
-      {
-        "command": "valt.newPageInFolder",
-        "title": "Add Page"
+        "command": "valt.newSubPage",
+        "title": "Add Sub-page"
       },
       {
         "command": "valt.removeFromFavorites",
@@ -93,14 +89,9 @@
           "group": "inline"
         },
         {
-          "command": "valt.newFolder",
-          "when": "view == valt.fileTree && viewItem == valtDirectory",
+          "command": "valt.newSubPage",
+          "when": "view == valt.fileTree && viewItem == valtPage",
           "group": "1_create@1"
-        },
-        {
-          "command": "valt.newPageInFolder",
-          "when": "view == valt.fileTree && (viewItem == valtDirectory || viewItem == valtFile)",
-          "group": "1_create@2"
         },
         {
           "command": "valt.removeFromFavorites",
