@@ -11,6 +11,7 @@ import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree }
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage, RecentFileEntry, OpenFileMessage } from "../shared/messages";
+import { DatabaseView } from "./databaseView";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
 import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
@@ -19,6 +20,7 @@ import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlug
 import { DateTimeProvider, PageProvider, TagProvider, type PageInfo } from "./decoratorProviders";
 import { createImagePlugin } from "./imagePlugin";
 import { twoColumnPlugin } from "./twoColumnPlugin";
+import { frontmatterPlugin } from "./frontmatterPlugin";
 import styles from "./style.css";
 
 const tagProvider = new TagProvider();
@@ -38,7 +40,9 @@ const vscode = acquireVsCodeApi();
 let currentFilePath = "";
 let currentWebviewBaseUri = "";
 let currentIsFavorited = false;
+let currentDatabaseFolder = "";
 let editorView: EditorView | null = null;
+let dbView: DatabaseView | null = null;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 let isRawMode = false;
 const richCompartment = new Compartment();
@@ -306,6 +310,7 @@ function createEditor(content: string, webviewBaseUri: string): EditorView {
       syntaxHighlighting(headingStyles),
       tablePlugin,
       twoColumnPlugin,
+      frontmatterPlugin,
       createImagePlugin(webviewBaseUri),
       codeBlockPlugin,
       inlineCodePlugin,
@@ -398,6 +403,12 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       }
       break;
     }
+    case "openDatabase":
+      showDatabase(message.folderPath, message.schema, message.rows);
+      break;
+    case "databaseSchemaUpdated":
+      dbView?.updateSchema(message.folderPath, message.schema);
+      break;
   }
 }
 
@@ -447,9 +458,56 @@ function renderSubPageCards(links: import("../shared/messages").PageLink[]): voi
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
+// ── Database view ─────────────────────────────────────────────────────────────
+
+function showDatabase(
+  folderPath: string,
+  schema: import("../shared/messages").DatabaseSchema,
+  rows: import("../shared/messages").DatabaseRow[],
+): void {
+  welcomeEl.style.display = "none";
+  pageHeaderEl.style.display = "none";
+
+  // Destroy active CM6 editor
+  if (editorView) {
+    editorView.destroy();
+    editorView = null;
+  }
+
+  editorRoot.style.display = "block";
+  currentDatabaseFolder = folderPath;
+  currentFilePath = "";
+
+  // Render database name in topbar
+  const dbName = folderPath.split("/").pop()?.replace(/^[0-9a-f]{8}\s+/, "") ?? "Database";
+  topbarEl.innerHTML = `
+    <div class="topbar-row topbar-nav-row">
+      <button id="topbar-home" class="topbar-back-btn" title="Home">◈</button>
+      <button id="topbar-back" class="topbar-back-btn" ${backStack.length === 0 ? "disabled" : ""} title="Go back">←</button>
+      <span class="topbar-breadcrumb">🗃 ${escapeHtml(dbName)}</span>
+      <span class="topbar-spacer"></span>
+    </div>
+  `;
+  topbarEl.style.display = "block";
+  document.getElementById("topbar-home")?.addEventListener("click", () => showHome());
+  document.getElementById("topbar-back")?.addEventListener("click", () => {
+    const prev = backStack.pop();
+    if (prev) { isBackNav = true; vscode.postMessage({ type: "requestFile", path: prev }); }
+  });
+
+  if (!dbView) {
+    dbView = new DatabaseView(editorRoot, {
+      postMessage: (msg) => vscode.postMessage(msg),
+      onOpenRow: (fsPath) => vscode.postMessage({ type: "requestFile", path: fsPath }),
+    });
+  }
+  dbView.load(folderPath, schema, rows);
+}
+
 function showDocument(content: string, sameFile = false): void {
   welcomeEl.style.display  = "none";
   editorRoot.style.display = "block";
+  currentDatabaseFolder = "";
 
   if (editorView && sameFile) {
     // Same file (e.g. external edit): patch content in-place to preserve undo history.
@@ -554,6 +612,7 @@ function showHome(): void {
   pageHeaderEl.style.display = "none";
   topbarEl.style.display = "none";
   currentFilePath = "";
+  currentDatabaseFolder = "";
   backStack = [];
   isBackNav = false;
   renderHomeScreen();

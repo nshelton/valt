@@ -5,7 +5,8 @@ import { ValtTreeProvider } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
 import { FavoritesTreeProvider } from "./favoritesProvider";
 import { PageIndex, generateId, extractTitle, extractEmoji, extractPageLinks } from "./pageIndex";
-import type { RecentFileEntry, PageLink } from "./shared/messages";
+import { DatabaseIndex, parseFrontmatter, replaceFrontmatter } from "./databaseIndex";
+import type { RecentFileEntry, PageLink, DatabaseSchema } from "./shared/messages";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
 
 // panels[panels.length - 1] is always the most-recently-focused panel.
@@ -14,6 +15,7 @@ let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 let favoritesProvider: FavoritesTreeProvider | undefined;
 const pageIndex = new PageIndex();
+const dbIndex = new DatabaseIndex();
 let extensionContext: vscode.ExtensionContext | undefined;
 
 function getActivePanel(): vscode.WebviewPanel | undefined {
@@ -125,6 +127,7 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   const mdWatcher = vscode.workspace.createFileSystemWatcher("**/*.md");
+  const dbWatcher = vscode.workspace.createFileSystemWatcher("**/.valtdb.json");
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   const debouncedRebuild = () => {
     if (rebuildTimer) clearTimeout(rebuildTimer);
@@ -133,6 +136,20 @@ export function activate(context: vscode.ExtensionContext): void {
   mdWatcher.onDidCreate(debouncedRebuild);
   mdWatcher.onDidDelete(debouncedRebuild);
   mdWatcher.onDidChange(debouncedRebuild);
+  dbWatcher.onDidCreate(debouncedRebuild);
+  dbWatcher.onDidDelete(debouncedRebuild);
+  dbWatcher.onDidChange((uri) => {
+    // Notify open panels if they are showing this database
+    const folderPath = path.dirname(uri.fsPath);
+    const refreshed = dbIndex.refreshDatabase(folderPath);
+    if (refreshed) {
+      broadcastToAll({
+        type: "databaseSchemaUpdated",
+        folderPath,
+        schema: refreshed.schema,
+      } satisfies ExtensionMessage);
+    }
+  });
 
   const removeFavoriteCmd = vscode.commands.registerCommand(
     "valt.removeFromFavorites",
@@ -145,7 +162,7 @@ export function activate(context: vscode.ExtensionContext): void {
     favoritesTreeView, fileTreeView, tagTreeView,
     openCmd, openFileCmd, refreshCmd, showHomeCmd, setTagColorCmd,
     newSubPageCmd, removeFavoriteCmd,
-    cfgWatcher, mdWatcher,
+    cfgWatcher, mdWatcher, dbWatcher,
   );
 
   rebuildIndexes();
@@ -276,6 +293,24 @@ function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPan
     case "createPageFromEditor":
       handleCreatePageFromEditor(message.currentFilePath, source);
       break;
+    case "saveRowProperty":
+      handleSaveRowProperty(message.rowPath, message.colId, message.value);
+      break;
+    case "saveDatabaseSchema":
+      handleSaveDatabaseSchema(message.folderPath, message.schema);
+      break;
+    case "createDatabaseRow":
+      handleCreateDatabaseRow(message.folderPath, message.title, message.properties, source);
+      break;
+    case "deleteDatabaseRow":
+      handleDeleteDatabaseRow(message.rowPath, source);
+      break;
+    case "requestDatabase":
+      sendDatabaseTo(message.folderPath, source);
+      break;
+    case "createDatabase":
+      handleCreateDatabase(message.parentDir, source);
+      break;
   }
 }
 
@@ -324,8 +359,31 @@ function handleRequestFile(pathOrName: string, target: vscode.WebviewPanel): voi
   });
 }
 
+// Send a database folder to a specific panel.
+function sendDatabaseTo(folderPath: string, target: vscode.WebviewPanel): void {
+  const data = dbIndex.loadDatabase(folderPath);
+  if (!data) {
+    vscode.window.showErrorMessage(`Valt: Could not load database at: ${folderPath}`);
+    return;
+  }
+  target.webview.postMessage({
+    type: "openDatabase",
+    folderPath,
+    schema: data.schema,
+    rows: data.rows,
+  } satisfies ExtensionMessage);
+}
+
 // Send a file to a specific panel.
 function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
+  // Detect if filePath is actually a database folder
+  if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
+    if (fs.existsSync(path.join(filePath, ".valtdb.json"))) {
+      sendDatabaseTo(filePath, target);
+      return;
+    }
+  }
+
   try {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
@@ -557,6 +615,117 @@ function handleCreateDailyNote(target: vscode.WebviewPanel): void {
   sendFileTo(filePath, target);
 }
 
+// ── Database handlers ──────────────────────────────────────────────────────────
+
+function handleSaveRowProperty(rowPath: string, colId: string, value: unknown): void {
+  try {
+    const content = fs.readFileSync(rowPath, "utf8");
+    const { properties, body } = parseFrontmatter(content);
+    properties[colId] = value;
+    const newContent = replaceFrontmatter(body ? `---\n\n---\n${body}` : content, properties);
+    // Reconstruct properly
+    const yamlLines = Object.entries(properties)
+      .map(([k, v]) => `${k}: ${serializeYamlValue(v)}`)
+      .join("\n");
+    const bodyContent = parseFrontmatter(content).body;
+    const updated = `---\n${yamlLines}\n---\n${bodyContent}`;
+    fs.writeFileSync(rowPath, updated, "utf8");
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not save row property.");
+  }
+}
+
+function serializeYamlValue(val: unknown): string {
+  if (val === null || val === undefined) return "null";
+  if (typeof val === "boolean") return val ? "true" : "false";
+  if (typeof val === "number") return String(val);
+  if (Array.isArray(val)) {
+    const items = val.map((v) => serializeYamlValue(v)).join(", ");
+    return `[${items}]`;
+  }
+  const str = String(val);
+  if (/[:#\[\]{}|>&*!,'"]/g.test(str) || str === "true" || str === "false" || str === "null") {
+    return `"${str.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`;
+  }
+  return str;
+}
+
+function handleSaveDatabaseSchema(folderPath: string, schema: DatabaseSchema): void {
+  try {
+    const schemaPath = path.join(folderPath, ".valtdb.json");
+    fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), "utf8");
+    dbIndex.refreshDatabase(folderPath);
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not save database schema.");
+  }
+}
+
+function handleCreateDatabaseRow(
+  folderPath: string,
+  title: string,
+  properties: Record<string, unknown>,
+  target: vscode.WebviewPanel,
+): void {
+  const root = getWorkspaceRoot();
+  if (!root) return;
+  const id = generateId();
+  const safeName = title.replace(/[\\/:*?"<>|]/g, "").trim() || "New Row";
+  const filename = `${id} ${safeName}.md`;
+  const filePath = path.join(folderPath, filename);
+
+  const yamlLines = Object.entries(properties)
+    .map(([k, v]) => `${k}: ${serializeYamlValue(v)}`)
+    .join("\n");
+  const content = `---\n${yamlLines}\n---\n\n# ${safeName}\n\n`;
+  fs.writeFileSync(filePath, content, "utf8");
+  pageIndex.updateEntry(filePath, content);
+  treeProvider?.setPageIndex(pageIndex);
+  treeProvider?.refresh();
+
+  // Refresh the database view
+  sendDatabaseTo(folderPath, target);
+}
+
+function handleDeleteDatabaseRow(rowPath: string, target: vscode.WebviewPanel): void {
+  try {
+    const folderPath = path.dirname(rowPath);
+    fs.unlinkSync(rowPath);
+    pageIndex.removeEntry(rowPath);
+    treeProvider?.setPageIndex(pageIndex);
+    treeProvider?.refresh();
+    sendDatabaseTo(folderPath, target);
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not delete database row.");
+  }
+}
+
+function handleCreateDatabase(parentDir: string, target: vscode.WebviewPanel): void {
+  const id = generateId();
+  const folderName = `${id} New Database`;
+  const folderPath = path.join(parentDir, folderName);
+  fs.mkdirSync(folderPath, { recursive: true });
+
+  const schema: DatabaseSchema = {
+    schemaVersion: 1,
+    columns: [
+      { id: "col_01", name: "Status", type: "select", options: ["Todo", "In Progress", "Done"] },
+    ],
+    views: [
+      { id: "view_01", type: "table", name: "All", sort: [], filters: [] },
+    ],
+    defaultView: "view_01",
+  };
+
+  fs.writeFileSync(
+    path.join(folderPath, ".valtdb.json"),
+    JSON.stringify(schema, null, 2),
+    "utf8"
+  );
+
+  treeProvider?.refresh();
+  sendDatabaseTo(folderPath, target);
+}
+
 // ── Tag index ─────────────────────────────────────────────────────────────────
 
 function buildTagIndexFromContent(filePath: string, content: string, index: TagIndex): void {
@@ -598,6 +767,9 @@ async function rebuildIndexes(): Promise<void> {
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
   favoritesProvider?.setPageIndex(pageIndex);
+
+  const root = getWorkspaceRoot();
+  if (root) dbIndex.build(root);
 }
 
 function updateTagIndexForFile(filePath: string, content: string): void {

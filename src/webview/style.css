@@ -1063,3 +1063,351 @@ tr:hover .cm-row-del-cell .cm-table-del-btn {
   margin: 0 3px;
   flex-shrink: 0;
 }
+
+/* ── Database view ───────────────────────────────────────────────────────────── */
+
+.db-view {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 24px 32px;
+  height: 100%;
+  overflow: hidden;
+}
+
+.db-header {
+  margin-bottom: 16px;
+}
+
+.db-title {
+  font-size: 1.4rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.db-table-wrap {
+  flex: 1;
+  overflow: auto;
+}
+
+.db-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.db-th {
+  text-align: left;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  color: var(--text-muted);
+  font-weight: 500;
+  cursor: pointer;
+  white-space: nowrap;
+  position: relative;
+  user-select: none;
+}
+
+.db-th:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.db-th-title {
+  min-width: 200px;
+  cursor: default;
+}
+
+.db-th-add-col {
+  cursor: default;
+  width: 120px;
+}
+
+.db-col-icon {
+  display: inline-block;
+  margin-right: 4px;
+  font-size: 0.75rem;
+  opacity: 0.6;
+}
+
+.db-col-delete {
+  display: none;
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.8rem;
+  border-radius: 3px;
+}
+
+.db-th:hover .db-col-delete {
+  display: inline-block;
+}
+
+.db-col-delete:hover {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff6b6b;
+}
+
+.db-row {
+  border-bottom: 1px solid var(--border);
+}
+
+.db-row:hover {
+  background: var(--bg-elevated);
+}
+
+.db-td {
+  padding: 6px 10px;
+  vertical-align: middle;
+  min-width: 100px;
+  max-width: 280px;
+  cursor: pointer;
+  position: relative;
+}
+
+.db-td-title {
+  cursor: default;
+  min-width: 200px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.db-cell-inner {
+  min-height: 20px;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.db-row-title {
+  color: var(--text);
+  cursor: pointer;
+  flex: 1;
+}
+
+.db-row-title:hover {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.db-row-delete {
+  display: none;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: 0.8rem;
+  border-radius: 3px;
+  flex-shrink: 0;
+}
+
+.db-row:hover .db-row-delete {
+  display: inline-block;
+}
+
+.db-row-delete:hover {
+  background: rgba(255, 80, 80, 0.15);
+  color: #ff6b6b;
+}
+
+.db-select-chip {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 10px;
+  background: var(--bg-inline);
+  border: 1px solid var(--border);
+  font-size: 0.78rem;
+  color: var(--text);
+}
+
+.db-checkbox-display {
+  font-size: 1rem;
+  color: var(--accent);
+}
+
+.db-url {
+  color: var(--accent);
+  text-decoration: underline;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.db-cell-input, .db-cell-select {
+  width: 100%;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focus);
+  color: var(--text);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+.db-cell-editable {
+  display: block;
+  width: 100%;
+  min-height: 20px;
+  outline: 1px solid var(--border-focus);
+  padding: 2px 4px;
+  border-radius: 2px;
+  color: var(--text);
+}
+
+.db-footer {
+  padding-top: 12px;
+}
+
+.db-add-row-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 4px 8px;
+  font-size: 0.85rem;
+  border-radius: 4px;
+}
+
+.db-add-row-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.db-add-col-btn {
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 0.8rem;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.db-add-col-btn:hover {
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.db-add-col-dialog {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 100;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border-focus);
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+  padding: 20px;
+  min-width: 280px;
+}
+
+.db-dialog-inner {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.db-dialog-inner label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.db-dialog-input, .db-dialog-select, .db-dialog-options {
+  background: var(--bg);
+  border: 1px solid var(--border-focus);
+  color: var(--text);
+  padding: 5px 8px;
+  border-radius: 4px;
+  font-size: 0.88rem;
+  outline: none;
+}
+
+.db-dialog-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.db-dialog-ok {
+  background: var(--accent);
+  border: none;
+  color: #fff;
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.db-dialog-ok:hover { opacity: 0.85; }
+
+.db-dialog-cancel {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--text-muted);
+  padding: 5px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+}
+
+.db-dialog-cancel:hover {
+  background: var(--bg-inline);
+  color: var(--text);
+}
+
+/* ── Frontmatter panel ───────────────────────────────────────────────────────── */
+
+.fm-panel {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.8rem;
+}
+
+.fm-panel:hover {
+  border-color: var(--border-focus);
+}
+
+.fm-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.fm-key {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.fm-key::after {
+  content: ":";
+}
+
+.fm-val {
+  color: var(--text);
+}
+
+.fm-empty {
+  color: var(--text-faint);
+  font-style: italic;
+}

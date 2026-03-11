@@ -172,6 +172,24 @@ function buildComponents(
         postMessage({ type: "createPageFromEditor", currentFilePath: getCurrentFilePath() });
       },
     },
+    {
+      label: "/database",
+      detail: "new database folder",
+      section: "pages",
+      apply(view, from, to) {
+        // Remove the /database text and ask extension to create a database folder
+        view.dispatch({
+          changes: { from, to, insert: "" },
+          selection: EditorSelection.cursor(from),
+        });
+        const filePath = getCurrentFilePath();
+        // Parent dir: same folder as the current file
+        const parentDir = filePath ? filePath.replace(/[/\\][^/\\]+$/, "") : "";
+        if (parentDir) {
+          postMessage({ type: "createDatabase", parentDir });
+        }
+      },
+    },
   ];
 }
 
