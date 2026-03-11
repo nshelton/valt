@@ -142,14 +142,33 @@ export class ValtTreeProvider
       const srcSiblingDir = path.join(path.dirname(srcPath), stem);
       const destSiblingDir = path.join(targetDir, stem);
 
+      // Prevent moving a page into one of its own sub-pages (circular hierarchy).
+      if (
+        targetDir === srcSiblingDir ||
+        targetDir.startsWith(srcSiblingDir + path.sep)
+      ) {
+        vscode.window.showWarningMessage(`Valt: Cannot move a page into one of its own sub-pages.`);
+        continue;
+      }
+
+      // Move the .md file first.
       try {
         fs.renameSync(srcPath, destPath);
         moved = true;
-        if (fs.existsSync(srcSiblingDir) && fs.statSync(srcSiblingDir).isDirectory()) {
-          fs.renameSync(srcSiblingDir, destSiblingDir);
-        }
       } catch {
         vscode.window.showErrorMessage(`Valt: Could not move "${basename}"`);
+        continue;
+      }
+
+      // Move the sibling children folder if it exists, rolling back on failure.
+      if (fs.existsSync(srcSiblingDir) && fs.statSync(srcSiblingDir).isDirectory()) {
+        try {
+          fs.renameSync(srcSiblingDir, destSiblingDir);
+        } catch {
+          // Roll back the .md move so the page isn't left in a broken state.
+          try { fs.renameSync(destPath, srcPath); moved = false; } catch { /* best-effort */ }
+          vscode.window.showErrorMessage(`Valt: Could not move sub-pages of "${basename}". Move cancelled.`);
+        }
       }
     }
 

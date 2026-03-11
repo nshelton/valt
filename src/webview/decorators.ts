@@ -15,6 +15,7 @@ import {
 } from "@codemirror/view";
 import { RangeSetBuilder, Annotation, Extension } from "@codemirror/state";
 import { CompletionContext, CompletionResult } from "@codemirror/autocomplete";
+import { keymap } from "@codemirror/view";
 import type { DecoratorProvider } from "./decoratorProviders";
 import { formatDate } from "./decoratorProviders";
 import type { WebviewMessage } from "../shared/messages";
@@ -32,6 +33,24 @@ class DecoratorWidget extends WidgetType {
   constructor(readonly text: string, readonly cssClass: string) { super(); }
 
   eq(other: DecoratorWidget): boolean {
+    return other.text === this.text && other.cssClass === this.cssClass;
+  }
+
+  toDOM(): HTMLElement {
+    const span = document.createElement("span");
+    span.className = this.cssClass;
+    span.textContent = this.text;
+    return span;
+  }
+
+  ignoreEvent(): boolean { return false; }
+}
+
+/** Page link widget — ignores mouse events so clicks navigate instead of placing cursor. */
+class PageLinkWidget extends WidgetType {
+  constructor(readonly text: string, readonly cssClass: string) { super(); }
+
+  eq(other: PageLinkWidget): boolean {
     return other.text === this.text && other.cssClass === this.cssClass;
   }
 
@@ -93,10 +112,13 @@ function buildDecorations(view: EditorView, providers: DecoratorProvider[]): Dec
 
         if (spec.isReplace) {
           // Replace widgets: revert to raw text when cursor is inside for editing
-          if (cursorInside) continue;
-          builder.add(mFrom, mTo, Decoration.replace({
-            widget: new DecoratorWidget(spec.displayText, cssClass),
-          }));
+          // Page links never revert — clicks navigate, backspace deletes whole token.
+          const isPageLink = spec.cssClass.includes("cm-decorator-file");
+          if (!isPageLink && cursorInside) continue;
+          const widget = isPageLink
+            ? new PageLinkWidget(spec.displayText, cssClass)
+            : new DecoratorWidget(spec.displayText, cssClass);
+          builder.add(mFrom, mTo, Decoration.replace({ widget }));
         } else {
           // Mark decorations: always render — styling persists even while editing
           builder.add(mFrom, mTo, Decoration.mark({ class: cssClass, attributes: spec.attributes }));
@@ -134,6 +156,13 @@ function createDecoratorPlugin(
     {
       decorations: (v) => v.decorations,
       eventHandlers: {
+        // mousedown fires before CM6 places the cursor. Returning true tells CM6
+        // the event was handled, preventing cursor placement inside the widget.
+        mousedown(event: MouseEvent, _view: EditorView) {
+          const target = event.target as HTMLElement;
+          if (!target.classList.contains("cm-decorator-file")) return false;
+          return true;
+        },
         click(event: MouseEvent, view: EditorView) {
           const target = event.target as HTMLElement;
           if (!target.classList.contains("cm-decorator-file")) return false;
@@ -223,6 +252,25 @@ const datetimeReplacer = EditorView.updateListener.of((update: ViewUpdate) => {
   }
 });
 
+// ── Page-link backspace keymap ────────────────────────────────────────────────
+// When the cursor is immediately after @[xxxxxxxx], Backspace deletes the whole token.
+
+const PAGE_LINK_RE = /^@\[[0-9a-f]{8}\]$/;
+const PAGE_LINK_LEN = 12; // "@[" + 8 hex + "]"
+
+const pageLinkBackspaceKeymap = keymap.of([{
+  key: "Backspace",
+  run(view: EditorView): boolean {
+    const { from, to } = view.state.selection.main;
+    if (from !== to) return false; // let normal selection delete handle it
+    if (from < PAGE_LINK_LEN) return false;
+    const before = view.state.doc.sliceString(from - PAGE_LINK_LEN, from);
+    if (!PAGE_LINK_RE.test(before)) return false;
+    view.dispatch({ changes: { from: from - PAGE_LINK_LEN, to: from, insert: "" } });
+    return true;
+  },
+}]);
+
 // ── Public factory ────────────────────────────────────────────────────────────
 
 export function createDecoratorExtensions(
@@ -232,6 +280,7 @@ export function createDecoratorExtensions(
   return [
     createDecoratorPlugin(providers, postMessage),
     datetimeReplacer,
+    pageLinkBackspaceKeymap,
   ];
 }
 
