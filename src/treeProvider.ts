@@ -5,6 +5,15 @@ import type { PageIndex, PageEntry } from "./pageIndex";
 
 // ── Tree item ─────────────────────────────────────────────────────────────────
 
+export class HomeTreeItem extends vscode.TreeItem {
+  constructor() {
+    super("Home", vscode.TreeItemCollapsibleState.None);
+    this.iconPath = new vscode.ThemeIcon("home");
+    this.command = { command: "valt.showHome", title: "Show Home" };
+    this.contextValue = "valtHome";
+  }
+}
+
 export class ValtTreeItem extends vscode.TreeItem {
   constructor(
     public readonly label: string,
@@ -15,7 +24,6 @@ export class ValtTreeItem extends vscode.TreeItem {
   ) {
     super(label, collapsibleState);
 
-    this.resourceUri = vscode.Uri.file(fsPath);
     this.contextValue = "valtPage";
     this.command = {
       command: "valt.openFile",
@@ -27,13 +35,15 @@ export class ValtTreeItem extends vscode.TreeItem {
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
+type AnyValtItem = HomeTreeItem | ValtTreeItem;
+
 export class ValtTreeProvider
   implements
-    vscode.TreeDataProvider<ValtTreeItem>,
+    vscode.TreeDataProvider<AnyValtItem>,
     vscode.TreeDragAndDropController<ValtTreeItem>
 {
   private readonly _onDidChangeTreeData =
-    new vscode.EventEmitter<ValtTreeItem | undefined | null | void>();
+    new vscode.EventEmitter<AnyValtItem | undefined | null | void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
   private readonly _onFileMoved = new vscode.EventEmitter<void>();
@@ -56,16 +66,16 @@ export class ValtTreeProvider
     this._onDidChangeTreeData.fire();
   }
 
-  getTreeItem(element: ValtTreeItem): vscode.TreeItem {
+  getTreeItem(element: AnyValtItem): vscode.TreeItem {
     return element;
   }
 
-  getChildren(element?: ValtTreeItem): ValtTreeItem[] {
+  getChildren(element?: ValtTreeItem): (HomeTreeItem | ValtTreeItem)[] {
     if (element) {
       if (!element.childrenDir) return [];
       return this.readPagesInDir(element.childrenDir);
     }
-    return this.readPagesInDir(this.rootPath);
+    return [new HomeTreeItem(), ...this.readPagesInDir(this.rootPath)];
   }
 
   async handleDrag(

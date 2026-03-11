@@ -885,12 +885,16 @@ tr:hover .cm-row-del-cell .cm-table-del-btn {
 
 .cm-decorator-file {
   color: var(--accent);
+  background: rgba(86, 156, 214, 0.12);
+  border: 1px solid rgba(86, 156, 214, 0.28);
   cursor: pointer;
-  text-decoration: underline;
-  text-underline-offset: 2px;
+  font-family: inherit;
 }
 
-.cm-decorator-file:hover { color: var(--accent-hover); }
+.cm-decorator-file:hover {
+  color: var(--accent-hover);
+  background: rgba(86, 156, 214, 0.2);
+}
 
 .cm-decorator {
   display: inline-block;

@@ -342,10 +342,14 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
     });
 
     const currentEntry = pageIndex.getByPath(filePath);
-    const childDir = path.join(path.dirname(filePath), currentEntry?.displayName ?? "");
-    const children: PageLink[] = pageIndex.getAll()
-      .filter((e) => path.dirname(e.fsPath) === childDir)
-      .map((e) => ({ displayName: e.displayName, fsPath: e.fsPath, emoji: e.emoji }));
+    const currentDisplayName = currentEntry?.displayName ?? "";
+    const stripUuid = (s: string) => s.replace(/^[0-9a-f]{8}\s+/i, "");
+    const children: PageLink[] = currentDisplayName
+      ? pageIndex.getAll().filter((e) => {
+          const dirBasename = path.basename(path.dirname(e.fsPath));
+          return stripUuid(dirBasename) === currentDisplayName;
+        }).map((e) => ({ displayName: e.displayName, fsPath: e.fsPath, emoji: e.emoji }))
+      : [];
 
     let createdAt = 0;
     let modifiedAt = 0;

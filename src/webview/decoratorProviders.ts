@@ -147,8 +147,8 @@ export class PageProvider extends DecoratorProvider {
     if (!/^[0-9a-f]{8}$/.test(afterAt)) return null;
     const page = this.byId.get(afterAt);
     if (!page) return null;
-    const display = page.emoji ? `${page.emoji} ${page.displayName}` : page.displayName;
-    return { displayText: display, cssClass: "cm-decorator-file", isReplace: false };
+    const display = page.emoji ? `${page.emoji} ${page.displayName}` : `⬝ ${page.displayName}`;
+    return { displayText: display, cssClass: "cm-decorator cm-decorator-file", isReplace: true };
   }
 
   completions(query: string): Completion[] {

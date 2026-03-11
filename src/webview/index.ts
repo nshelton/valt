@@ -421,7 +421,6 @@ function updateEmojiHeader(content: string): void {
   if (emojiMatch) {
     pageEmojiEl.textContent = emojiMatch[1];
     pageEmojiEl.style.display = "block";
-    pageHeaderEl.style.display = "flex";
   } else {
     pageEmojiEl.textContent = "";
     pageEmojiEl.style.display = "none";
@@ -429,12 +428,10 @@ function updateEmojiHeader(content: string): void {
 }
 
 function renderSubPageCards(links: import("../shared/messages").PageLink[]): void {
-  if (links.length === 0) {
-    pageSubPagesEl.innerHTML = "";
-    if (!pageEmojiEl.textContent) pageHeaderEl.style.display = "none";
-    return;
-  }
-  pageHeaderEl.style.display = "flex";
+  pageSubPagesEl.innerHTML = "";
+  const hasEmoji = !!pageEmojiEl.textContent;
+  pageHeaderEl.style.display = (hasEmoji || links.length > 0) ? "flex" : "none";
+  if (links.length === 0) return;
   pageSubPagesEl.innerHTML = links.map((l) => `
     <div class="sub-page-card" data-path="${escapeAttr(l.fsPath)}" role="button" tabindex="0">
       ${l.emoji ? `<span class="sub-page-card-emoji">${l.emoji}</span>` : ""}
