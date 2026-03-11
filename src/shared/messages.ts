@@ -4,6 +4,40 @@
 
 // ── Shared types ──────────────────────────────────────────────────────────────
 
+// ── Database types ────────────────────────────────────────────────────────────
+
+export type ColumnType = "text" | "number" | "select" | "multi-select" | "date" | "checkbox" | "relation" | "url";
+
+export interface ColumnDef {
+  id: string;
+  name: string;
+  type: ColumnType;
+  options?: string[];  // for "select" and "multi-select"
+}
+
+export interface ViewConfig {
+  id: string;
+  type: "table" | "board";
+  name: string;
+  sort: { colId: string; dir: "asc" | "desc" }[];
+  filters: { colId: string; op: string; value: unknown }[];
+}
+
+export interface DatabaseSchema {
+  schemaVersion: number;
+  columns: ColumnDef[];
+  views: ViewConfig[];
+  defaultView: string;
+}
+
+export interface DatabaseRow {
+  fsPath: string;
+  pageId: string | null;
+  title: string;
+  emoji: string | null;
+  properties: Record<string, unknown>;
+}
+
 /** A resolved link to another page. */
 export interface PageLink {
   displayName: string;
@@ -90,6 +124,21 @@ export interface InsertPageLinkMessage {
   uuid: string;
 }
 
+/** Sent when a database folder is opened — tells webview to show table view. */
+export interface OpenDatabaseMessage {
+  type: "openDatabase";
+  folderPath: string;
+  schema: DatabaseSchema;
+  rows: DatabaseRow[];
+}
+
+/** Sent when the schema for an open database is updated on disk. */
+export interface DatabaseSchemaUpdatedMessage {
+  type: "databaseSchemaUpdated";
+  folderPath: string;
+  schema: DatabaseSchema;
+}
+
 export type ExtensionMessage =
   | OpenFileMessage
   | FileIndexMessage
@@ -99,7 +148,9 @@ export type ExtensionMessage =
   | ShowHomeMessage
   | FavoritesMessage
   | ImageSavedMessage
-  | InsertPageLinkMessage;
+  | InsertPageLinkMessage
+  | OpenDatabaseMessage
+  | DatabaseSchemaUpdatedMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
@@ -152,6 +203,47 @@ export interface CreatePageFromEditorMessage {
   currentFilePath: string;
 }
 
+/** Ask the extension to save a single property value on a database row. */
+export interface SaveRowPropertyMessage {
+  type: "saveRowProperty";
+  rowPath: string;
+  colId: string;
+  value: unknown;
+}
+
+/** Ask the extension to write an updated schema to a database folder. */
+export interface SaveDatabaseSchemaMessage {
+  type: "saveDatabaseSchema";
+  folderPath: string;
+  schema: DatabaseSchema;
+}
+
+/** Ask the extension to create a new row in a database and open it. */
+export interface CreateDatabaseRowMessage {
+  type: "createDatabaseRow";
+  folderPath: string;
+  title: string;
+  properties: Record<string, unknown>;
+}
+
+/** Ask the extension to delete a database row file. */
+export interface DeleteDatabaseRowMessage {
+  type: "deleteDatabaseRow";
+  rowPath: string;
+}
+
+/** Ask the extension to reload a database and send OpenDatabaseMessage. */
+export interface RequestDatabaseMessage {
+  type: "requestDatabase";
+  folderPath: string;
+}
+
+/** Ask the extension to create a new database folder and open it. */
+export interface CreateDatabaseMessage {
+  type: "createDatabase";
+  parentDir: string;
+}
+
 export type WebviewMessage =
   | ReadyMessage
   | RequestFileMessage
@@ -160,4 +252,10 @@ export type WebviewMessage =
   | CreateDailyNoteMessage
   | ToggleFavoriteMessage
   | SaveImageMessage
-  | CreatePageFromEditorMessage;
+  | CreatePageFromEditorMessage
+  | SaveRowPropertyMessage
+  | SaveDatabaseSchemaMessage
+  | CreateDatabaseRowMessage
+  | DeleteDatabaseRowMessage
+  | RequestDatabaseMessage
+  | CreateDatabaseMessage;

@@ -3,6 +3,24 @@ import * as fs from "fs";
 import * as path from "path";
 import type { PageIndex, PageEntry } from "./pageIndex";
 
+// ── Database folder tree item ──────────────────────────────────────────────────
+
+export class ValtDatabaseItem extends vscode.TreeItem {
+  constructor(
+    public readonly label: string,
+    public readonly fsPath: string,
+  ) {
+    super(label, vscode.TreeItemCollapsibleState.None);
+    this.contextValue = "valtDatabase";
+    this.iconPath = new vscode.ThemeIcon("database");
+    this.command = {
+      command: "valt.openFile",
+      title: "Open Database",
+      arguments: [fsPath],
+    };
+  }
+}
+
 // ── Tree item ─────────────────────────────────────────────────────────────────
 
 export class HomeTreeItem extends vscode.TreeItem {
@@ -35,12 +53,12 @@ export class ValtTreeItem extends vscode.TreeItem {
 
 // ── Provider ──────────────────────────────────────────────────────────────────
 
-type AnyValtItem = HomeTreeItem | ValtTreeItem;
+type AnyValtItem = HomeTreeItem | ValtTreeItem | ValtDatabaseItem;
 
 export class ValtTreeProvider
   implements
     vscode.TreeDataProvider<AnyValtItem>,
-    vscode.TreeDragAndDropController<ValtTreeItem>
+    vscode.TreeDragAndDropController<ValtTreeItem | ValtDatabaseItem>
 {
   private readonly _onDidChangeTreeData =
     new vscode.EventEmitter<AnyValtItem | undefined | null | void>();
@@ -141,12 +159,23 @@ export class ValtTreeProvider
     }
   }
 
-  private readPagesInDir(dir: string): ValtTreeItem[] {
+  private readPagesInDir(dir: string): (ValtTreeItem | ValtDatabaseItem)[] {
     if (!fs.existsSync(dir)) return [];
 
     const entries = fs.readdirSync(dir, { withFileTypes: true });
-    const items: ValtTreeItem[] = [];
+    const items: (ValtTreeItem | ValtDatabaseItem)[] = [];
 
+    // Collect database folders (subdirs with .valtdb.json)
+    for (const entry of entries) {
+      if (entry.name.startsWith(".") || !entry.isDirectory()) continue;
+      const fullPath = path.join(dir, entry.name);
+      if (fs.existsSync(path.join(fullPath, ".valtdb.json"))) {
+        const label = entry.name.replace(/^[0-9a-f]{8}\s+/, "");
+        items.push(new ValtDatabaseItem(label, fullPath));
+      }
+    }
+
+    // Collect .md page files
     for (const entry of entries) {
       if (entry.name.startsWith(".")) continue;
       if (!entry.isFile() || !entry.name.endsWith(".md")) continue;
@@ -154,8 +183,11 @@ export class ValtTreeProvider
       const fullPath = path.join(dir, entry.name);
       const stem = entry.name.replace(/\.md$/, "");
       const siblingDir = path.join(dir, stem);
+      // Skip sibling dirs that are databases (already shown above)
       const hasChildren =
-        fs.existsSync(siblingDir) && fs.statSync(siblingDir).isDirectory();
+        fs.existsSync(siblingDir) &&
+        fs.statSync(siblingDir).isDirectory() &&
+        !fs.existsSync(path.join(siblingDir, ".valtdb.json"));
 
       const label = this.labelFor(fullPath, entry.name);
       items.push(
@@ -181,15 +213,15 @@ export class ValtTreeProvider
     return basename.replace(/\.md$/, "").replace(/^\d+\s+/, "");
   }
 
-  private sortItems(items: ValtTreeItem[]): ValtTreeItem[] {
+  private sortItems(items: (ValtTreeItem | ValtDatabaseItem)[]): (ValtTreeItem | ValtDatabaseItem)[] {
     return items.sort((a, b) => {
-      const entryA = this.pageIndex?.getByPath(a.fsPath);
-      const entryB = this.pageIndex?.getByPath(b.fsPath);
+      const entryA = a instanceof ValtTreeItem ? this.pageIndex?.getByPath(a.fsPath) : undefined;
+      const entryB = b instanceof ValtTreeItem ? this.pageIndex?.getByPath(b.fsPath) : undefined;
 
       const idA = entryA?.id ?? null;
       const idB = entryB?.id ?? null;
 
-      if (idA !== null && idB !== null) return idA - idB;
+      if (idA !== null && idB !== null) return idA.localeCompare(idB);
       if (idA !== null) return -1;
       if (idB !== null) return 1;
       return (a.label as string).localeCompare(b.label as string);
