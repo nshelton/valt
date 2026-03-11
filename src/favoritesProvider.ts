@@ -3,6 +3,20 @@ import * as path from "path";
 import * as fs from "fs";
 import type { PageIndex } from "./pageIndex";
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/** Extract the 8-char hex UUID prefix from a file basename, or null. */
+function idFromPath(fsPath: string): string | null {
+  const basename = path.basename(fsPath);
+  const m = basename.match(/^([0-9a-f]{8})\s/);
+  return m ? m[1] : null;
+}
+
+/** The storage key for a given file: UUID if available, else "path:<absPath>". */
+function storageKey(fsPath: string): string {
+  return idFromPath(fsPath) ?? `path:${fsPath}`;
+}
+
 // ── Tree item ─────────────────────────────────────────────────────────────────
 
 export class FavoriteItem extends vscode.TreeItem {
@@ -33,15 +47,58 @@ export class FavoritesTreeProvider
   private readonly _onDidChangeTreeData = new vscode.EventEmitter<void>();
   readonly onDidChangeTreeData = this._onDidChangeTreeData.event;
 
-  // Accept drops from the file tree; favorites items themselves are not draggable
   readonly dragMimeTypes: string[] = [];
   readonly dropMimeTypes = ["application/vnd.code.tree.valt.fileTree"];
 
-  private favorites: string[] = [];
+  /** Set of storage keys (UUID or "path:<abs>") currently favorited. */
+  private favoriteKeys: Set<string> = new Set();
   private pageIndex: PageIndex | null = null;
 
-  constructor(private readonly storage: vscode.Memento) {
-    this.favorites = this.storage.get<string[]>("valt.favorites", []);
+  constructor(private readonly favoritesFilePath: string) {
+    this.load();
+  }
+
+  // ── Persistence ─────────────────────────────────────────────────────────────
+
+  private load(): void {
+    try {
+      if (fs.existsSync(this.favoritesFilePath)) {
+        const lines = fs.readFileSync(this.favoritesFilePath, "utf8")
+          .split("\n")
+          .map((l) => l.trim())
+          .filter(Boolean);
+        this.favoriteKeys = new Set(lines);
+      }
+    } catch { /* ignore */ }
+  }
+
+  private save(): void {
+    try {
+      fs.writeFileSync(
+        this.favoritesFilePath,
+        [...this.favoriteKeys].join("\n") + (this.favoriteKeys.size ? "\n" : ""),
+        "utf8"
+      );
+    } catch { /* ignore */ }
+  }
+
+  // ── Public API ──────────────────────────────────────────────────────────────
+
+  isFavorite(fsPath: string): boolean {
+    return this.favoriteKeys.has(storageKey(fsPath));
+  }
+
+  /** Toggle favorite status. Returns the new state. */
+  toggleFavorite(fsPath: string): boolean {
+    const key = storageKey(fsPath);
+    if (this.favoriteKeys.has(key)) {
+      this.favoriteKeys.delete(key);
+    } else {
+      this.favoriteKeys.add(key);
+    }
+    this.save();
+    this._onDidChangeTreeData.fire();
+    return this.favoriteKeys.has(key);
   }
 
   setPageIndex(index: PageIndex): void {
@@ -53,23 +110,35 @@ export class FavoritesTreeProvider
     this._onDidChangeTreeData.fire();
   }
 
+  // ── TreeDataProvider ─────────────────────────────────────────────────────────
+
   getTreeItem(element: FavoriteItem): vscode.TreeItem {
     return element;
   }
 
   getChildren(): FavoriteItem[] {
-    return this.favorites
-      .filter((p) => fs.existsSync(p))
-      .map((p) => {
-        const entry = this.pageIndex?.getByPath(p);
-        const label = entry?.displayName ?? path.basename(p, ".md");
-        return new FavoriteItem(p, label, entry?.emoji);
-      });
+    if (!this.pageIndex) return [];
+
+    const items: FavoriteItem[] = [];
+    for (const key of this.favoriteKeys) {
+      let entry;
+      if (key.startsWith("path:")) {
+        const fsPath = key.slice(5);
+        entry = this.pageIndex.getByPath(fsPath);
+        if (!entry || !fs.existsSync(fsPath)) continue;
+        items.push(new FavoriteItem(fsPath, entry.displayName, entry.emoji ?? undefined));
+      } else {
+        entry = this.pageIndex.getById(key);
+        if (!entry || !fs.existsSync(entry.fsPath)) continue;
+        items.push(new FavoriteItem(entry.fsPath, entry.displayName, entry.emoji ?? undefined));
+      }
+    }
+    return items;
   }
 
-  async handleDrag(): Promise<void> {
-    // Not draggable — favorites are bookmark references, not movable items
-  }
+  // ── Drag and Drop ────────────────────────────────────────────────────────────
+
+  async handleDrag(): Promise<void> {}
 
   async handleDrop(
     _target: FavoriteItem | undefined,
@@ -80,25 +149,16 @@ export class FavoritesTreeProvider
     if (!item) return;
 
     const paths: string[] = item.value;
-    let changed = false;
     for (const p of paths) {
-      if (!this.favorites.includes(p)) {
-        this.favorites.push(p);
-        changed = true;
-      }
+      this.favoriteKeys.add(storageKey(p));
     }
-    if (changed) {
-      await this.storage.update("valt.favorites", this.favorites);
-      this._onDidChangeTreeData.fire();
-    }
+    this.save();
+    this._onDidChangeTreeData.fire();
   }
 
   async removeFromFavorites(fsPath: string): Promise<void> {
-    const i = this.favorites.indexOf(fsPath);
-    if (i >= 0) {
-      this.favorites.splice(i, 1);
-      await this.storage.update("valt.favorites", this.favorites);
-      this._onDidChangeTreeData.fire();
-    }
+    this.favoriteKeys.delete(storageKey(fsPath));
+    this.save();
+    this._onDidChangeTreeData.fire();
   }
 }

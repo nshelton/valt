@@ -39,6 +39,7 @@ export interface OpenFileMessage {
   createdAt: number;     // ms timestamp (0 if unavailable)
   modifiedAt: number;    // ms timestamp
   breadcrumb: string[];  // folder names between workspace root and file
+  isFavorited: boolean;
 }
 
 export interface FileIndexMessage {
@@ -70,13 +71,20 @@ export interface ShowHomeMessage {
   type: "showHome";
 }
 
+/** Sent after a favorite toggle so the webview can update the star button. */
+export interface FavoritesMessage {
+  type: "favorites";
+  isFavorited: boolean;
+}
+
 export type ExtensionMessage =
   | OpenFileMessage
   | FileIndexMessage
   | TagIndexMessage
   | FileRenamedMessage
   | RecentFilesMessage
-  | ShowHomeMessage;
+  | ShowHomeMessage
+  | FavoritesMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
@@ -109,9 +117,16 @@ export interface CreateDailyNoteMessage {
   type: "createDailyNote";
 }
 
+/** Ask the extension to toggle favorite status for the current file. */
+export interface ToggleFavoriteMessage {
+  type: "toggleFavorite";
+  filePath: string;
+}
+
 export type WebviewMessage =
   | ReadyMessage
   | RequestFileMessage
   | SaveFileMessage
   | CreateFileMessage
-  | CreateDailyNoteMessage;
+  | CreateDailyNoteMessage
+  | ToggleFavoriteMessage;

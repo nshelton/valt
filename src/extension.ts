@@ -30,7 +30,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
   tagTreeProvider = new ValtTagTreeProvider();
-  favoritesProvider = new FavoritesTreeProvider(context.workspaceState);
+  const favoritesFile = workspaceRoot ? path.join(workspaceRoot, ".valt-favorites") : "";
+  favoritesProvider = new FavoritesTreeProvider(favoritesFile);
 
   const favoritesTreeView = vscode.window.createTreeView("valt.favoritesTree", {
     treeDataProvider: favoritesProvider,
@@ -245,7 +246,10 @@ function buildWebviewHtml(
         <h1>Valt</h1>
         <p>Select a file from the sidebar to get started.</p>
       </div>
-      <div id="page-emoji" style="display:none;"></div>
+      <div id="page-header" style="display:none;">
+        <div id="page-emoji"></div>
+        <div id="page-sub-pages"></div>
+      </div>
       <div id="editor-root" style="display:none;"></div>
     </div>
   </div>
@@ -270,7 +274,15 @@ function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPan
     case "createDailyNote":
       handleCreateDailyNote(source);
       break;
+    case "toggleFavorite":
+      handleToggleFavorite(message.filePath, source);
+      break;
   }
+}
+
+function handleToggleFavorite(filePath: string, target: vscode.WebviewPanel): void {
+  const isFavorited = favoritesProvider?.toggleFavorite(filePath) ?? false;
+  target.webview.postMessage({ type: "favorites", isFavorited } satisfies ExtensionMessage);
 }
 
 function handleRequestFile(pathOrName: string, target: vscode.WebviewPanel): void {
@@ -328,9 +340,10 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
       ? rel.split(path.sep).filter(Boolean).map((seg) => seg.replace(/^[0-9a-f]{8}\s+/, ""))
       : [];
 
+    const isFavorited = favoritesProvider?.isFavorite(filePath) ?? false;
     const msg: ExtensionMessage = {
       type: "openFile", path: filePath, content, webviewBaseUri,
-      backlinks, outgoingLinks, createdAt, modifiedAt, breadcrumb,
+      backlinks, outgoingLinks, createdAt, modifiedAt, breadcrumb, isFavorited,
     };
     target.webview.postMessage(msg);
     pushRecent(filePath);

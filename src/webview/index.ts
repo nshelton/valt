@@ -34,6 +34,7 @@ const vscode = acquireVsCodeApi();
 // ── Module state ──────────────────────────────────────────────────────────────
 
 let currentFilePath = "";
+let currentIsFavorited = false;
 let editorView: EditorView | null = null;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 
@@ -45,10 +46,12 @@ let tagCount = 0;
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
 
-const welcomeEl   = document.getElementById("welcome")      as HTMLDivElement;
-const pageEmojiEl = document.getElementById("page-emoji")   as HTMLDivElement;
-const editorRoot  = document.getElementById("editor-root")  as HTMLDivElement;
-const topbarEl    = document.getElementById("page-topbar")  as HTMLDivElement;
+const welcomeEl      = document.getElementById("welcome")          as HTMLDivElement;
+const pageHeaderEl   = document.getElementById("page-header")      as HTMLDivElement;
+const pageEmojiEl    = document.getElementById("page-emoji")        as HTMLDivElement;
+const pageSubPagesEl = document.getElementById("page-sub-pages")    as HTMLDivElement;
+const editorRoot     = document.getElementById("editor-root")       as HTMLDivElement;
+const topbarEl       = document.getElementById("page-topbar")       as HTMLDivElement;
 
 // ── Navigation history ────────────────────────────────────────────────────────
 
@@ -271,8 +274,10 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       isBackNav = false;
       const isSameFile = currentFilePath === message.path;
       currentFilePath = message.path;
+      currentIsFavorited = message.isFavorited;
       showDocument(message.content, isSameFile);
       updateEmojiHeader(message.content);
+      renderSubPageCards(message.outgoingLinks);
       renderTopbar(message);
       break;
     }
@@ -298,14 +303,25 @@ function handleExtensionMessage(message: ExtensionMessage): void {
     case "showHome":
       showHome();
       break;
+    case "favorites":
+      currentIsFavorited = message.isFavorited;
+      updateStarButton();
+      break;
   }
+}
+
+function updateStarButton(): void {
+  const btn = document.getElementById("topbar-star");
+  if (!btn) return;
+  btn.textContent = currentIsFavorited ? "★" : "☆";
+  btn.classList.toggle("active", currentIsFavorited);
 }
 
 // ── Emoji header ──────────────────────────────────────────────────────────────
 
 function updateEmojiHeader(content: string): void {
   const h1 = content.match(/^#[ \t]+(.+)$/m);
-  if (!h1) { pageEmojiEl.style.display = "none"; return; }
+  if (!h1) { pageEmojiEl.textContent = ""; pageEmojiEl.style.display = "none"; pageHeaderEl.style.display = "none"; return; }
 
   const title = h1[1].trim();
   const emojiMatch = title.match(
@@ -314,9 +330,31 @@ function updateEmojiHeader(content: string): void {
   if (emojiMatch) {
     pageEmojiEl.textContent = emojiMatch[1];
     pageEmojiEl.style.display = "block";
+    pageHeaderEl.style.display = "flex";
   } else {
+    pageEmojiEl.textContent = "";
     pageEmojiEl.style.display = "none";
   }
+}
+
+function renderSubPageCards(links: import("../shared/messages").PageLink[]): void {
+  if (links.length === 0) {
+    pageSubPagesEl.innerHTML = "";
+    if (!pageEmojiEl.textContent) pageHeaderEl.style.display = "none";
+    return;
+  }
+  pageHeaderEl.style.display = "flex";
+  pageSubPagesEl.innerHTML = links.map((l) => `
+    <div class="sub-page-card" data-path="${escapeAttr(l.fsPath)}" role="button" tabindex="0">
+      ${l.emoji ? `<span class="sub-page-card-emoji">${l.emoji}</span>` : ""}
+      <span class="sub-page-card-title">${escapeHtml(l.displayName)}</span>
+    </div>
+  `).join("");
+  pageSubPagesEl.querySelectorAll<HTMLElement>(".sub-page-card").forEach((card) => {
+    const open = () => { const p = card.dataset.path; if (p) vscode.postMessage({ type: "requestFile", path: p }); };
+    card.addEventListener("click", open);
+    card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") open(); });
+  });
 }
 
 // ── Rendering ─────────────────────────────────────────────────────────────────
@@ -389,6 +427,7 @@ function renderTopbar(msg: OpenFileMessage): void {
       ${breadcrumbHtml}
       <span class="topbar-spacer"></span>
       ${metaParts.length ? `<span class="topbar-meta">${metaParts.join(" · ")}</span>` : ""}
+      <button id="topbar-star" class="topbar-star-btn${currentIsFavorited ? " active" : ""}" title="Favorite">${currentIsFavorited ? "★" : "☆"}</button>
       <button id="topbar-new" class="topbar-new-btn" title="New page">+</button>
     </div>
     ${linksRow}
@@ -399,6 +438,9 @@ function renderTopbar(msg: OpenFileMessage): void {
   document.getElementById("topbar-back")?.addEventListener("click", () => {
     const prev = backStack.pop();
     if (prev) { isBackNav = true; vscode.postMessage({ type: "requestFile", path: prev }); }
+  });
+  document.getElementById("topbar-star")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "toggleFavorite", filePath: currentFilePath });
   });
   document.getElementById("topbar-new")?.addEventListener("click", () => {
     vscode.postMessage({ type: "createFile" });
@@ -421,7 +463,7 @@ function isOnHome(): boolean {
 function showHome(): void {
   welcomeEl.style.display = "block";
   editorRoot.style.display = "none";
-  pageEmojiEl.style.display = "none";
+  pageHeaderEl.style.display = "none";
   topbarEl.style.display = "none";
   currentFilePath = "";
   backStack = [];
