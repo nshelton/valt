@@ -296,3 +296,10 @@ export type WebviewMessage =
   | DeleteDatabaseMessage
   | OpenUrlMessage
   | FetchLinkMetadataMessage;
+
+// ── Exhaustive check utility ────────────────────────────────────────────────
+
+/** Compile-time exhaustive check — add `default: assertNever(msg)` to switches. */
+export function assertNever(x: never): never {
+  throw new Error(`Unhandled message type: ${JSON.stringify(x)}`);
+}

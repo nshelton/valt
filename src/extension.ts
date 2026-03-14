@@ -10,26 +10,35 @@ import { PageIndex, generateId, extractTitle, extractEmoji, extractPageLinks } f
 import { DatabaseIndex, parseFrontmatter, replaceFrontmatter } from "./databaseIndex";
 import type { RecentFileEntry, PageLink, DatabaseSchema } from "./shared/messages";
 import type { ExtensionMessage, WebviewMessage } from "./shared/messages";
+import { assertNever } from "./shared/messages";
 
 // panels[panels.length - 1] is always the most-recently-focused panel.
-let panels: vscode.WebviewPanel[] = [];
+interface PanelState {
+  panel: vscode.WebviewPanel;
+  currentFilePath: string;
+}
+let panels: PanelState[] = [];
 let treeProvider: ValtTreeProvider | undefined;
 let tagTreeProvider: ValtTagTreeProvider | undefined;
 let favoritesProvider: FavoritesTreeProvider | undefined;
 const pageIndex = new PageIndex();
 const dbIndex = new DatabaseIndex();
 let extensionContext: vscode.ExtensionContext | undefined;
+let outputChannel: vscode.OutputChannel;
+let suppressWatcher = false;
 
-function getActivePanel(): vscode.WebviewPanel | undefined {
+function getActivePanel(): PanelState | undefined {
   return panels[panels.length - 1];
 }
 
 function broadcastToAll(msg: ExtensionMessage): void {
-  for (const p of panels) p.webview.postMessage(msg);
+  for (const ps of panels) ps.panel.webview.postMessage(msg);
 }
 
 export function activate(context: vscode.ExtensionContext): void {
   extensionContext = context;
+  outputChannel = vscode.window.createOutputChannel("Valt");
+  context.subscriptions.push(outputChannel);
   const workspaceRoot = getWorkspaceRoot();
 
   treeProvider = new ValtTreeProvider(workspaceRoot ?? "", pageIndex);
@@ -70,7 +79,7 @@ export function activate(context: vscode.ExtensionContext): void {
     (filePath: string) => {
       const active = getActivePanel();
       if (active) {
-        active.reveal(active.viewColumn ?? vscode.ViewColumn.One);
+        active.panel.reveal(active.panel.viewColumn ?? vscode.ViewColumn.One);
         sendFileTo(filePath, active);
       } else {
         createValtPanel(context, vscode.ViewColumn.One, filePath);
@@ -85,8 +94,8 @@ export function activate(context: vscode.ExtensionContext): void {
   const showHomeCmd = vscode.commands.registerCommand("valt.showHome", () => {
     const active = getActivePanel();
     if (active) {
-      active.reveal(active.viewColumn ?? vscode.ViewColumn.One);
-      active.webview.postMessage({ type: "showHome" } satisfies ExtensionMessage);
+      active.panel.reveal(active.panel.viewColumn ?? vscode.ViewColumn.One);
+      active.panel.webview.postMessage({ type: "showHome" } satisfies ExtensionMessage);
     } else {
       createValtPanel(context, vscode.ViewColumn.One);
     }
@@ -133,6 +142,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const dbWatcher = vscode.workspace.createFileSystemWatcher("**/.valtdb.json");
   let rebuildTimer: ReturnType<typeof setTimeout> | undefined;
   const debouncedRebuild = () => {
+    if (suppressWatcher) return;
     if (rebuildTimer) clearTimeout(rebuildTimer);
     rebuildTimer = setTimeout(() => rebuildIndexes(), 500);
   };
@@ -180,7 +190,9 @@ export function activate(context: vscode.ExtensionContext): void {
         pageIndex.removeEntry(item.fsPath);
         treeProvider?.setPageIndex(pageIndex);
         treeProvider?.refresh();
-      } catch {
+        broadcastToAll({ type: "showHome" } satisfies ExtensionMessage);
+      } catch (err) {
+        outputChannel.appendLine(`Delete page failed (${item.fsPath}): ${err}`);
         vscode.window.showErrorMessage("Valt: Could not delete page.");
       }
     }
@@ -200,7 +212,8 @@ export function activate(context: vscode.ExtensionContext): void {
       try {
         fs.rmSync(item.fsPath, { recursive: true, force: true });
         treeProvider?.refresh();
-      } catch {
+      } catch (err) {
+        outputChannel.appendLine(`Delete database failed (${item.fsPath}): ${err}`);
         vscode.window.showErrorMessage("Valt: Could not delete database.");
       }
     }
@@ -240,7 +253,8 @@ function createValtPanel(
   );
 
   p.webview.html = buildWebviewHtml(p.webview, context);
-  panels.push(p);
+  const ps: PanelState = { panel: p, currentFilePath: "" };
+  panels.push(ps);
 
   // Per-panel state (in closure)
   const lastOpen = extensionContext?.globalState.get<string>("valt.lastOpenPath");
@@ -248,15 +262,11 @@ function createValtPanel(
 
   p.webview.onDidReceiveMessage(
     (raw: unknown) => {
-      const message = raw as WebviewMessage;
-      if (message.type === "ready") {
-        sendFileIndexTo(p);
-        sendTagIndexTo(p);
-        sendRecentFilesTo(p);
-        if (pending) { sendFileTo(pending, p); pending = undefined; }
-      } else {
-        handleWebviewMessage(message, p);
-      }
+      const message = validateWebviewMessage(raw);
+      if (!message) return;
+      handleWebviewMessage(message, ps, () => {
+        if (pending) { sendFileTo(pending, ps); pending = undefined; }
+      });
     },
     undefined,
     context.subscriptions
@@ -265,13 +275,13 @@ function createValtPanel(
   p.onDidChangeViewState((e) => {
     if (e.webviewPanel.active) {
       // Move to end of array so getActivePanel() returns this one.
-      panels = panels.filter((x) => x !== p);
-      panels.push(p);
+      panels = panels.filter((x) => x !== ps);
+      panels.push(ps);
     }
   }, undefined, context.subscriptions);
 
   p.onDidDispose(() => {
-    panels = panels.filter((x) => x !== p);
+    panels = panels.filter((x) => x !== ps);
   }, undefined, context.subscriptions);
 }
 
@@ -317,10 +327,48 @@ function buildWebviewHtml(
 </html>`;
 }
 
+// ── Message validation ────────────────────────────────────────────────────────
+
+const KNOWN_WEBVIEW_TYPES = new Set<string>([
+  "ready", "requestFile", "saveFile", "createFile", "createDailyNote",
+  "toggleFavorite", "saveImage", "createPageFromEditor", "saveRowProperty",
+  "saveDatabaseSchema", "createDatabaseRow", "deleteDatabaseRow",
+  "requestDatabase", "createDatabase", "deleteFile", "deleteDatabase",
+  "openUrl", "fetchLinkMetadata",
+]);
+
+function validateWebviewMessage(raw: unknown): WebviewMessage | null {
+  if (typeof raw !== "object" || raw === null || typeof (raw as Record<string, unknown>).type !== "string") {
+    console.warn("Valt: Received malformed webview message:", raw);
+    return null;
+  }
+  const msg = raw as WebviewMessage;
+  if (!KNOWN_WEBVIEW_TYPES.has(msg.type)) {
+    console.warn(`Valt: Unknown webview message type: "${msg.type}"`);
+    return null;
+  }
+  // Validate critical data-carrying messages
+  if (msg.type === "saveFile" && (typeof msg.filePath !== "string" || typeof msg.content !== "string")) {
+    console.warn("Valt: Malformed saveFile message — missing filePath or content");
+    return null;
+  }
+  return msg;
+}
+
 // ── Message handlers ──────────────────────────────────────────────────────────
 
-function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPanel): void {
+function handleWebviewMessage(
+  message: WebviewMessage,
+  source: PanelState,
+  onReady?: () => void,
+): void {
   switch (message.type) {
+    case "ready":
+      sendFileIndexTo(source);
+      sendTagIndexTo(source);
+      sendRecentFilesTo(source);
+      onReady?.();
+      break;
     case "requestFile":
       handleRequestFile(message.path, source);
       break;
@@ -371,14 +419,23 @@ function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPan
       break;
     case "fetchLinkMetadata":
       fetchLinkMetadata(message.url).then((meta) => {
-        source.webview.postMessage({
+        source.panel.webview.postMessage({
           type: "linkMetadata",
           url: message.url,
           title: meta.title,
           faviconDataUrl: meta.faviconDataUrl,
         } satisfies ExtensionMessage);
+      }).catch(() => {
+        source.panel.webview.postMessage({
+          type: "linkMetadata",
+          url: message.url,
+          title: null,
+          faviconDataUrl: null,
+        } satisfies ExtensionMessage);
       });
       break;
+    default:
+      assertNever(message);
   }
 }
 
@@ -386,25 +443,30 @@ function handleSaveImage(
   currentFilePath: string,
   data: string,
   mimeType: string,
-  target: vscode.WebviewPanel
+  target: PanelState
 ): void {
   const ext = mimeType.split("/")[1]?.replace("jpeg", "jpg") ?? "png";
   const id = generateId();
   const dir = path.dirname(currentFilePath);
   const filename = `img-${id}.${ext}`;
   const absPath = path.join(dir, filename);
-  fs.writeFileSync(absPath, Buffer.from(data, "base64"));
+  atomicWriteSync(absPath, Buffer.from(data, "base64"));
   const relativePath = `./${filename}`;
-  target.webview.postMessage({ type: "imageSaved", relativePath } satisfies ExtensionMessage);
+  target.panel.webview.postMessage({ type: "imageSaved", relativePath } satisfies ExtensionMessage);
 }
 
-function handleToggleFavorite(filePath: string, target: vscode.WebviewPanel): void {
+function handleToggleFavorite(filePath: string, target: PanelState): void {
   const isFavorited = favoritesProvider?.toggleFavorite(filePath) ?? false;
   treeProvider?.refresh();
-  target.webview.postMessage({ type: "favorites", isFavorited } satisfies ExtensionMessage);
+  // Broadcast to all panels showing this file, not just the requester
+  for (const ps of panels) {
+    if (ps === target || ps.currentFilePath === filePath) {
+      ps.panel.webview.postMessage({ type: "favorites", isFavorited } satisfies ExtensionMessage);
+    }
+  }
 }
 
-function handleRequestFile(pathOrName: string, target: vscode.WebviewPanel): void {
+function handleRequestFile(pathOrName: string, target: PanelState): void {
   // Absolute path that exists → open directly
   if (path.isAbsolute(pathOrName) && fs.existsSync(pathOrName)) {
     sendFileTo(pathOrName, target);
@@ -429,13 +491,13 @@ function handleRequestFile(pathOrName: string, target: vscode.WebviewPanel): voi
 }
 
 // Send a database folder to a specific panel.
-function sendDatabaseTo(folderPath: string, target: vscode.WebviewPanel): void {
+function sendDatabaseTo(folderPath: string, target: PanelState): void {
   const data = dbIndex.loadDatabase(folderPath);
   if (!data) {
     vscode.window.showErrorMessage(`Valt: Could not load database at: ${folderPath}`);
     return;
   }
-  target.webview.postMessage({
+  target.panel.webview.postMessage({
     type: "openDatabase",
     folderPath,
     schema: data.schema,
@@ -444,7 +506,7 @@ function sendDatabaseTo(folderPath: string, target: vscode.WebviewPanel): void {
 }
 
 // Send a file to a specific panel.
-function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
+function sendFileTo(filePath: string, target: PanelState): void {
   // Detect if filePath is actually a database folder
   if (fs.existsSync(filePath) && fs.statSync(filePath).isDirectory()) {
     if (fs.existsSync(path.join(filePath, ".valtdb.json"))) {
@@ -456,7 +518,7 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
   try {
     const content = fs.readFileSync(filePath, "utf8");
     const dirUri = vscode.Uri.file(path.dirname(filePath));
-    const webviewBaseUri = target.webview.asWebviewUri(dirUri).toString();
+    const webviewBaseUri = target.panel.webview.asWebviewUri(dirUri).toString();
 
     const backlinks: PageLink[] = pageIndex.getLinkers(filePath).map((p) => {
       const e = pageIndex.getByPath(p);
@@ -500,11 +562,13 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
       type: "openFile", path: filePath, content, webviewBaseUri,
       backlinks, outgoingLinks, children, createdAt, modifiedAt, breadcrumb, isFavorited,
     };
-    target.webview.postMessage(msg);
+    target.panel.webview.postMessage(msg);
+    target.currentFilePath = filePath;
     pushRecent(filePath);
     extensionContext?.globalState.update("valt.lastOpenPath", filePath);
     sendRecentFiles();
-  } catch {
+  } catch (err) {
+    outputChannel.appendLine(`Read file failed (${filePath}): ${err}`);
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
   }
 }
@@ -515,11 +579,11 @@ function sendFileToWebview(filePath: string): void {
   if (active) sendFileTo(filePath, active);
 }
 
-function sendFileIndexTo(p: vscode.WebviewPanel): void {
-  p.webview.postMessage({ type: "fileIndex", pages: pageIndex.toPageInfos() } satisfies ExtensionMessage);
+function sendFileIndexTo(ps: PanelState): void {
+  ps.panel.webview.postMessage({ type: "fileIndex", pages: pageIndex.toPageInfos() } satisfies ExtensionMessage);
 }
 
-function sendTagIndexTo(p: vscode.WebviewPanel): void {
+function sendTagIndexTo(ps: PanelState): void {
   const index = tagTreeProvider ? [...tagTreeProvider.getIndex().entries()] : [];
   const tags: Record<string, string[]> = {};
   const colors: Record<string, string> = {};
@@ -527,10 +591,10 @@ function sendTagIndexTo(p: vscode.WebviewPanel): void {
     tags[tag] = files.map((f) => path.basename(f));
     if (tagTreeProvider) colors[tag] = tagTreeProvider.colorFor(tag);
   }
-  p.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
+  ps.panel.webview.postMessage({ type: "tagIndex", tags, colors } satisfies ExtensionMessage);
 }
 
-function sendRecentFilesTo(p: vscode.WebviewPanel): void {
+function sendRecentFilesTo(ps: PanelState): void {
   const paths: string[] = extensionContext?.globalState.get("valt.recentFiles", []) ?? [];
   const files: RecentFileEntry[] = [];
   for (const fp of paths) {
@@ -545,7 +609,7 @@ function sendRecentFilesTo(p: vscode.WebviewPanel): void {
       });
     } catch { /* file deleted — skip */ }
   }
-  p.webview.postMessage({ type: "recentFiles", files } satisfies ExtensionMessage);
+  ps.panel.webview.postMessage({ type: "recentFiles", files } satisfies ExtensionMessage);
 }
 
 function sendFileIndex(): void { for (const p of panels) sendFileIndexTo(p); }
@@ -553,9 +617,12 @@ function sendTagIndex(): void  { for (const p of panels) sendTagIndexTo(p); }
 function sendRecentFiles(): void { for (const p of panels) sendRecentFilesTo(p); }
 
 function handleSaveFile(filePath: string, content: string): void {
+  suppressWatcher = true;
   try {
-    fs.writeFileSync(filePath, content, "utf8");
-  } catch {
+    atomicWriteSync(filePath, content);
+  } catch (err) {
+    suppressWatcher = false;
+    outputChannel.appendLine(`Save file failed (${filePath}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not save file.");
     return;
   }
@@ -567,7 +634,9 @@ function handleSaveFile(filePath: string, content: string): void {
 
     try {
       fs.renameSync(filePath, newPath);
-    } catch {
+    } catch (err) {
+      suppressWatcher = false;
+      outputChannel.appendLine(`Rename failed (${filePath} → ${newFilename}): ${err}`);
       vscode.window.showErrorMessage(`Valt: Could not rename file to "${newFilename}"`);
       pageIndex.updateEntry(filePath, content);
       sendFileIndex();
@@ -591,6 +660,7 @@ function handleSaveFile(filePath: string, content: string): void {
     // Broadcast rename to all panels (each ignores it if not showing that file)
     broadcastToAll({ type: "fileRenamed", oldPath: filePath, newPath } satisfies ExtensionMessage);
   }
+  suppressWatcher = false;
 
   updateTagIndexForFile(renameResult.needsRename ? renameResult.newPath : filePath, content);
   sendFileIndex();
@@ -644,7 +714,7 @@ function createNewPage(dir: string): { filePath: string; id: string } {
   const emoji = randomPageEmoji();
   const filePath = path.join(dir, `${id} New Page.md`);
   const content = `# ${emoji} New Page\n\n`;
-  fs.writeFileSync(filePath, content, "utf8");
+  atomicWriteSync(filePath, content);
   pageIndex.updateEntry(filePath, content);
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
@@ -652,25 +722,25 @@ function createNewPage(dir: string): { filePath: string; id: string } {
   return { filePath, id };
 }
 
-function handleCreateFile(target: vscode.WebviewPanel): void {
+function handleCreateFile(target: PanelState): void {
   const root = getWorkspaceRoot();
   if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
   const { filePath } = createNewPage(root);
   sendFileTo(filePath, target);
 }
 
-function handleCreatePageFromEditor(currentFilePath: string, target: vscode.WebviewPanel): void {
+function handleCreatePageFromEditor(currentFilePath: string, target: PanelState): void {
   const root = getWorkspaceRoot();
   if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
   const stem = path.basename(currentFilePath, ".md");
   const targetDir = path.join(path.dirname(currentFilePath), stem);
   if (!fs.existsSync(targetDir)) fs.mkdirSync(targetDir, { recursive: true });
   const { filePath, id } = createNewPage(targetDir);
-  target.webview.postMessage({ type: "insertPageLink", uuid: id } satisfies ExtensionMessage);
+  target.panel.webview.postMessage({ type: "insertPageLink", uuid: id } satisfies ExtensionMessage);
   sendFileTo(filePath, target);
 }
 
-function handleCreateDailyNote(target: vscode.WebviewPanel): void {
+function handleCreateDailyNote(target: PanelState): void {
   const root = getWorkspaceRoot();
   if (!root) { vscode.window.showErrorMessage("Valt: No workspace folder open."); return; }
   const today = new Date();
@@ -680,7 +750,7 @@ function handleCreateDailyNote(target: vscode.WebviewPanel): void {
   const id = generateId();
   const filePath = path.join(root, `${id} ${dateStr}.md`);
   const content = `# ${dateStr}\n\n`;
-  fs.writeFileSync(filePath, content, "utf8");
+  atomicWriteSync(filePath, content);
   pageIndex.updateEntry(filePath, content);
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
@@ -702,8 +772,9 @@ function handleSaveRowProperty(rowPath: string, colId: string, value: unknown): 
       .join("\n");
     const bodyContent = parseFrontmatter(content).body;
     const updated = `---\n${yamlLines}\n---\n${bodyContent}`;
-    fs.writeFileSync(rowPath, updated, "utf8");
-  } catch {
+    atomicWriteSync(rowPath, updated);
+  } catch (err) {
+    outputChannel.appendLine(`Save row property failed (${rowPath}, ${colId}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not save row property.");
   }
 }
@@ -726,9 +797,10 @@ function serializeYamlValue(val: unknown): string {
 function handleSaveDatabaseSchema(folderPath: string, schema: DatabaseSchema): void {
   try {
     const schemaPath = path.join(folderPath, ".valtdb.json");
-    fs.writeFileSync(schemaPath, JSON.stringify(schema, null, 2), "utf8");
+    atomicWriteSync(schemaPath, JSON.stringify(schema, null, 2));
     dbIndex.refreshDatabase(folderPath);
-  } catch {
+  } catch (err) {
+    outputChannel.appendLine(`Save database schema failed (${folderPath}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not save database schema.");
   }
 }
@@ -737,7 +809,7 @@ function handleCreateDatabaseRow(
   folderPath: string,
   title: string,
   properties: Record<string, unknown>,
-  target: vscode.WebviewPanel,
+  target: PanelState,
 ): void {
   const root = getWorkspaceRoot();
   if (!root) return;
@@ -750,7 +822,7 @@ function handleCreateDatabaseRow(
     .map(([k, v]) => `${k}: ${serializeYamlValue(v)}`)
     .join("\n");
   const content = `---\n${yamlLines}\n---\n\n# ${safeName}\n\n`;
-  fs.writeFileSync(filePath, content, "utf8");
+  atomicWriteSync(filePath, content);
   pageIndex.updateEntry(filePath, content);
   treeProvider?.setPageIndex(pageIndex);
   treeProvider?.refresh();
@@ -759,7 +831,7 @@ function handleCreateDatabaseRow(
   sendDatabaseTo(folderPath, target);
 }
 
-async function handleDeleteFile(filePath: string, target: vscode.WebviewPanel): Promise<void> {
+async function handleDeleteFile(filePath: string, target: PanelState): Promise<void> {
   const fileName = path.basename(filePath);
   const answer = await vscode.window.showWarningMessage(
     `Delete "${fileName}"? This cannot be undone.`,
@@ -772,13 +844,14 @@ async function handleDeleteFile(filePath: string, target: vscode.WebviewPanel): 
     pageIndex.removeEntry(filePath);
     treeProvider?.setPageIndex(pageIndex);
     treeProvider?.refresh();
-    target.webview.postMessage({ type: "showHome" });
-  } catch {
+    broadcastToAll({ type: "showHome" } satisfies ExtensionMessage);
+  } catch (err) {
+    outputChannel.appendLine(`Delete file failed (${filePath}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not delete page.");
   }
 }
 
-async function handleDeleteDatabase(folderPath: string, target: vscode.WebviewPanel): Promise<void> {
+async function handleDeleteDatabase(folderPath: string, target: PanelState): Promise<void> {
   const folderName = path.basename(folderPath).replace(/^[0-9a-f]{8}\s+/, "");
   const answer = await vscode.window.showWarningMessage(
     `Delete database "${folderName}" and all its rows? This cannot be undone.`,
@@ -789,13 +862,14 @@ async function handleDeleteDatabase(folderPath: string, target: vscode.WebviewPa
   try {
     fs.rmSync(folderPath, { recursive: true, force: true });
     treeProvider?.refresh();
-    target.webview.postMessage({ type: "showHome" });
-  } catch {
+    broadcastToAll({ type: "showHome" } satisfies ExtensionMessage);
+  } catch (err) {
+    outputChannel.appendLine(`Delete database failed (${folderPath}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not delete database.");
   }
 }
 
-function handleDeleteDatabaseRow(rowPath: string, target: vscode.WebviewPanel): void {
+function handleDeleteDatabaseRow(rowPath: string, target: PanelState): void {
   try {
     const folderPath = path.dirname(rowPath);
     fs.unlinkSync(rowPath);
@@ -803,12 +877,13 @@ function handleDeleteDatabaseRow(rowPath: string, target: vscode.WebviewPanel): 
     treeProvider?.setPageIndex(pageIndex);
     treeProvider?.refresh();
     sendDatabaseTo(folderPath, target);
-  } catch {
+  } catch (err) {
+    outputChannel.appendLine(`Delete database row failed (${rowPath}): ${err}`);
     vscode.window.showErrorMessage("Valt: Could not delete database row.");
   }
 }
 
-function handleCreateDatabase(parentDir: string, target: vscode.WebviewPanel): void {
+function handleCreateDatabase(parentDir: string, target: PanelState): void {
   const id = generateId();
   const folderName = `${id} New Database`;
   const folderPath = path.join(parentDir, folderName);
@@ -825,10 +900,9 @@ function handleCreateDatabase(parentDir: string, target: vscode.WebviewPanel): v
     defaultView: "view_01",
   };
 
-  fs.writeFileSync(
+  atomicWriteSync(
     path.join(folderPath, ".valtdb.json"),
-    JSON.stringify(schema, null, 2),
-    "utf8"
+    JSON.stringify(schema, null, 2)
   );
 
   treeProvider?.refresh();
@@ -839,7 +913,23 @@ function handleCreateDatabase(parentDir: string, target: vscode.WebviewPanel): v
 
 interface LinkMeta { title: string | null; faviconDataUrl: string | null; }
 
+const LINK_META_CACHE_MAX = 500;
 const linkMetaCache = new Map<string, LinkMeta>();
+
+function linkMetaCacheSet(key: string, value: LinkMeta): void {
+  // Delete first so re-insertion moves to end (preserves insertion order for LRU)
+  linkMetaCache.delete(key);
+  linkMetaCache.set(key, value);
+  if (linkMetaCache.size > LINK_META_CACHE_MAX) {
+    // Delete oldest entries (first in iteration order)
+    const excess = linkMetaCache.size - LINK_META_CACHE_MAX;
+    let i = 0;
+    for (const k of linkMetaCache.keys()) {
+      if (i++ >= excess) break;
+      linkMetaCache.delete(k);
+    }
+  }
+}
 
 async function fetchLinkMetadata(url: string): Promise<LinkMeta> {
   if (linkMetaCache.has(url)) return linkMetaCache.get(url)!;
@@ -849,11 +939,11 @@ async function fetchLinkMetadata(url: string): Promise<LinkMeta> {
     const faviconUrl = extractFaviconUrl(html, url);
     const faviconDataUrl = faviconUrl ? await fetchFaviconAsDataUrl(faviconUrl) : null;
     const result: LinkMeta = { title, faviconDataUrl };
-    linkMetaCache.set(url, result);
+    linkMetaCacheSet(url, result);
     return result;
   } catch {
     const result: LinkMeta = { title: null, faviconDataUrl: null };
-    linkMetaCache.set(url, result);
+    linkMetaCacheSet(url, result);
     return result;
   }
 }
@@ -993,10 +1083,13 @@ async function rebuildIndexes(): Promise<void> {
         return { fsPath: uri.fsPath, content: Buffer.from(bytes).toString("utf8") };
       })
     );
-    for (const result of results) {
+    for (let j = 0; j < results.length; j++) {
+      const result = results[j];
       if (result.status === "fulfilled") {
         buildTagIndexFromContent(result.value.fsPath, result.value.content, tagIdx);
         pageFiles.push(result.value);
+      } else {
+        outputChannel.appendLine(`Index: failed to read ${batch[j].fsPath}: ${result.reason}`);
       }
     }
   }
@@ -1027,6 +1120,22 @@ function updateTagIndexForFile(filePath: string, content: string): void {
 }
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
+
+/** Write to temp file then rename — atomic on all major filesystems. */
+function atomicWriteSync(filePath: string, content: string | Buffer, encoding?: BufferEncoding): void {
+  const tmp = filePath + ".valt-tmp";
+  try {
+    if (Buffer.isBuffer(content)) {
+      fs.writeFileSync(tmp, content);
+    } else {
+      fs.writeFileSync(tmp, content, encoding ?? "utf8");
+    }
+    fs.renameSync(tmp, filePath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch { /* already gone */ }
+    throw err;
+  }
+}
 
 function getWorkspaceRoot(): string | undefined {
   return vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;

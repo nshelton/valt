@@ -11,6 +11,7 @@ import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree }
 import { tags } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage, RecentFileEntry, OpenFileMessage } from "../shared/messages";
+import { assertNever } from "../shared/messages";
 import { DatabaseView } from "./databaseView";
 import { tablePlugin } from "./tablePlugin";
 import { createDecoratorExtensions, createDecoratorCompletionSource } from "./decorators";
@@ -517,6 +518,8 @@ function handleExtensionMessage(message: ExtensionMessage): void {
     case "linkMetadata":
       linkStore.receive(message.url, message.title, message.faviconDataUrl);
       break;
+    default:
+      assertNever(message);
   }
 }
 
@@ -833,6 +836,8 @@ function refreshHomeStats(): void {
   if (el) el.textContent = statsText();
 }
 
+let searchDismissHandler: ((e: MouseEvent) => void) | null = null;
+
 function wireHomeEvents(): void {
   // Card clicks
   welcomeEl.querySelectorAll<HTMLElement>(".home-card").forEach((card) => {
@@ -887,11 +892,16 @@ function wireHomeEvents(): void {
     if (e.key === "Escape") { searchInput.value = ""; searchResults.hidden = true; }
   });
 
-  document.addEventListener("click", (e) => {
+  // Remove previous listener before adding a new one to prevent leak
+  if (searchDismissHandler) {
+    document.removeEventListener("click", searchDismissHandler);
+  }
+  searchDismissHandler = (e: MouseEvent) => {
     if (!searchInput.contains(e.target as Node) && !searchResults.contains(e.target as Node)) {
       searchResults.hidden = true;
     }
-  });
+  };
+  document.addEventListener("click", searchDismissHandler);
 }
 
 // ── Init ──────────────────────────────────────────────────────────────────────

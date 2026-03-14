@@ -8,11 +8,13 @@ A lightweight personal knowledge base VSCode extension. Markdown stays as plain 
 src/
   extension.ts           Host entry point. Activates on valt.open. Reads/writes files.
   pageIndex.ts           PageIndex class — UUID system, backlinks graph, auto-rename.
-  treeProvider.ts        TreeDataProvider for the sidebar file tree.
+  databaseIndex.ts       DatabaseIndex class — scans .valtdb.json schemas and row files.
+  treeProvider.ts        TreeDataProvider for the sidebar file tree (drag-and-drop).
   tagTreeProvider.ts     TreeDataProvider for the sidebar tag tree (colored dots).
   favoritesProvider.ts   TreeDataProvider for the favorites panel (drag-to-pin).
   shared/
     messages.ts          Typed message bus — all host↔webview comms go here.
+                         Also exports assertNever() for exhaustive switch checks.
   webview/
     index.ts             Webview bootstrap. Creates CodeMirror editor, home screen.
     decorators.ts        CM6 ViewPlugin + autocomplete + @now ephemeral replacer.
@@ -21,6 +23,12 @@ src/
     emojiPlugin.ts       :query emoji autocomplete + emoji glyph size plugin.
     inlineStylePlugin.ts Hides **bold**/*italic* markers; Ctrl+B / Ctrl+I commands.
     componentMenu.ts     /slash command menu (table, code, tag, link, headings…).
+    linkPlugin.ts        CM6 plugin: renders [text](url) links with fetched title/favicon.
+    linkMetadataStore.ts Client-side LRU cache for URL metadata (title + favicon).
+    imagePlugin.ts       CM6 plugin: renders ![alt](path) images as inline widgets.
+    frontmatterPlugin.ts CM6 plugin: hides YAML frontmatter, shows as pill when collapsed.
+    twoColumnPlugin.ts   CM6 plugin: <!-- 2col --> blocks rendered as side-by-side editors.
+    databaseView.ts      Table/board view for database folders (driven by .valtdb.json).
     style.css            Dark theme + CodeMirror overrides. No framework.
     css.d.ts             Type declaration for .css imports (esbuild text loader).
 assets/
@@ -30,10 +38,38 @@ esbuild.js               Dual-bundle: extension (CJS) + webview (IIFE).
 
 ## Core rules
 
-1. **Typed message bus** — never bypass `messages.ts`. Add interface first, then `case` in the switch.
+1. **Typed message bus** — never bypass `messages.ts`. Add interface first, then `case` in the switch. Both switches use `default: assertNever(message)` for compile-time exhaustive checking.
 2. **Two worlds** — `dist/extension.js` is Node/CJS. `dist/webview.js` is browser IIFE. Never import `vscode` in `src/webview/`.
 3. **No React, no Tailwind, no CSS frameworks.** Vanilla TS + CodeMirror.
 4. Small focused libraries are acceptable (e.g. `chrono-node`, `emoji-mart`).
+
+## Defensive patterns
+
+These patterns exist throughout the codebase to prevent common failure modes:
+
+- **Atomic writes** — all file writes go through `atomicWriteSync()` (write to `.valt-tmp`, then `fs.renameSync`). A crash mid-write cannot corrupt the original file.
+- **Message validation** — `validateWebviewMessage()` checks `typeof raw.type === "string"` and validates critical fields before the switch. Malformed messages are logged and rejected.
+- **Exhaustive switches** — both `handleWebviewMessage()` and `handleExtensionMessage()` use `default: assertNever(message)`. Adding a new message type without a handler is a compile error.
+- **Watcher suppression** — `suppressWatcher` flag prevents redundant index rebuilds during the save→rename window in `handleSaveFile`.
+- **Bounded caches** — `linkMetaCache` (extension, max 500) and `LinkMetadataStore` (webview, max 200) use LRU eviction to prevent unbounded memory growth.
+- **Per-panel state** — `PanelState { panel, currentFilePath }` tracks which file each panel has open. Enables targeted broadcasts (favorites, delete notifications).
+- **Output channel** — `vscode.window.createOutputChannel("Valt")` provides structured diagnostics. All catch blocks log to it with context (file path, operation).
+
+## Panel state model
+
+```typescript
+interface PanelState {
+  panel: vscode.WebviewPanel;
+  currentFilePath: string;  // set by sendFileTo(), "" when on home/database
+}
+let panels: PanelState[];   // last element = most-recently-focused
+```
+
+- `getActivePanel()` returns the last element.
+- `broadcastToAll()` iterates all panels via `ps.panel.webview.postMessage()`.
+- `sendFileTo()` sets `target.currentFilePath = filePath` after posting.
+- Favorite toggles broadcast to all panels showing the same file.
+- Delete operations broadcast `showHome` to all panels.
 
 ## Page identity & file naming
 
@@ -49,9 +85,10 @@ Files use a stable 8-char hex UUID prefix: `a3f2bc1d Getting Started.md`.
 ```
 User clicks tree item
   → valt.openFile command
-  → extension.ts sendFileToWebview()
+  → extension.ts sendFileTo(filePath, panelState)
   → posts OpenFileMessage { path, content, webviewBaseUri, backlinks, outgoingLinks,
-                            createdAt, modifiedAt, breadcrumb }
+                            children, createdAt, modifiedAt, breadcrumb, isFavorited }
+  → sets panelState.currentFilePath = filePath
   → index.ts showDocument() — replaces editor content or creates editor
 ```
 
@@ -63,11 +100,22 @@ User types in CodeMirror
   → scheduleSave() — 500ms debounce
   → posts SaveFileMessage { filePath, content }
   → extension.ts handleSaveFile()
-      fs.writeFileSync (full content, no splicing)
+      suppressWatcher = true
+      atomicWriteSync(filePath, content)   ← write to .valt-tmp, then rename
       computeRename() → rename on disk if H1 changed → FileRenamedMessage
+      suppressWatcher = false
       updateTagIndexForFile() → TagIndexMessage
-      updatePageIndex() → FileIndexMessage
+      sendFileIndex() → FileIndexMessage to all panels
 ```
+
+## Database system
+
+Database folders contain a `.valtdb.json` schema file and row files (markdown with YAML frontmatter).
+
+- `databaseIndex.ts` (`DatabaseIndex` class) scans workspace for database folders, parses schemas and rows.
+- `databaseView.ts` (`DatabaseView` class) renders table/board views in the webview.
+- Row properties are stored as YAML frontmatter; column definitions live in `.valtdb.json`.
+- CRUD operations: `CreateDatabaseMessage`, `CreateDatabaseRowMessage`, `SaveRowPropertyMessage`, `SaveDatabaseSchemaMessage`, `DeleteDatabaseRowMessage`, `DeleteDatabaseMessage`.
 
 ## @decorator system
 
@@ -100,8 +148,12 @@ TagProvider        — setTagNames(names[], colors{}); isReplace: false (mark)
 
 - **Emoji autocomplete** — type `:query` to search by keyword (emoji-mart). Selecting inserts the glyph.
 - **Inline style plugin** — `**bold**` / `*italic*` markers hidden when cursor is outside. Ctrl+B / Ctrl+I toggle markers on selection.
-- **Component menu** — type `/` to insert: table, code block, quote, divider, tag pill, link, headings, todo checkbox, date.
-- **Table plugin** — markdown pipe tables rendered as interactive `<table>` widgets.
+- **Component menu** — type `/` to insert: table, code block, quote, divider, tag pill, link, headings, todo checkbox, date, page.
+- **Table plugin** — markdown pipe tables rendered as interactive `<table>` widgets with column resize, row/column add/delete.
+- **Link plugin** — `[text](url)` links rendered with fetched page title and favicon. Metadata cached in `LinkMetadataStore`.
+- **Image plugin** — `![alt](path)` rendered as inline image widgets. Drag-and-drop / paste to insert images.
+- **Frontmatter plugin** — YAML frontmatter hidden behind a collapsible pill. Expands when cursor enters.
+- **Two-column plugin** — `<!-- 2col -->` blocks rendered as side-by-side nested CodeMirror editors.
 
 ## Tag system
 
@@ -110,22 +162,12 @@ TagProvider        — setTagNames(names[], colors{}); isReplace: false (mark)
 - `TagIndexMessage` sends `tags: Record<string, string[]>` and `colors: Record<string, string>` to webview.
 - Tags are color-tinted in the editor via `TagProvider.tryMatch()` using inline `style` attributes.
 
-## Message bus (`messages.ts`)
+## Message bus
 
-**Extension → Webview:**
-- `OpenFileMessage` — path, content, webviewBaseUri, backlinks, outgoingLinks, createdAt, modifiedAt, breadcrumb
-- `FileIndexMessage` — `pages: PageInfo[]`
-- `TagIndexMessage` — `tags`, `colors`
-- `FileRenamedMessage` — oldPath, newPath
-- `RecentFilesMessage` — `files: RecentFileEntry[]`
-- `ShowHomeMessage` — navigate to home screen
-
-**Webview → Extension:**
-- `ReadyMessage` — handshake; triggers file index + tag index send
-- `RequestFileMessage` — path (absolute fsPath or UUID) to open
-- `SaveFileMessage` — filePath + full content string
-- `CreateFileMessage` — create a blank new page and open it
-- `CreateDailyNoteMessage` — create/open today's daily note
+All message types are defined in `src/shared/messages.ts` with full field documentation. Key patterns:
+- **Extension → Webview** (12 types): `OpenFileMessage`, `FileIndexMessage`, `TagIndexMessage`, `FileRenamedMessage`, `RecentFilesMessage`, `ShowHomeMessage`, `FavoritesMessage`, `ImageSavedMessage`, `InsertPageLinkMessage`, `OpenDatabaseMessage`, `DatabaseSchemaUpdatedMessage`, `LinkMetadataMessage`
+- **Webview → Extension** (17 types): file CRUD, database CRUD, image save, link metadata fetch, daily notes, favorites toggle
+- Add new messages: define interface in `messages.ts` → add to union type → add `case` in both switches
 
 ## Build
 
@@ -136,5 +178,5 @@ npm run watch   # esbuild --watch
 
 ## What's next
 
-- Image paste handler
-- Multi-panel layout
+- Multi-panel conflict detection (mtime-based)
+- Full-text search

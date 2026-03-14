@@ -19,6 +19,8 @@ export interface LinkMeta {
 type RequestFn = (url: string) => void;
 type Listener  = () => void;
 
+const CACHE_MAX = 200;
+
 export class LinkMetadataStore {
   private readonly cache = new Map<string, LinkMeta>();
   private readonly listeners = new Set<Listener>();
@@ -34,16 +36,16 @@ export class LinkMetadataStore {
    */
   request(url: string, requestFn: RequestFn): void {
     if (this.cache.has(url)) return;
-    this.cache.set(url, { status: "pending" });
+    this.cacheSet(url, { status: "pending" });
     requestFn(url);
   }
 
   /** Called when the extension responds with metadata. */
   receive(url: string, title: string | null, faviconDataUrl: string | null): void {
     if (title === null && faviconDataUrl === null) {
-      this.cache.set(url, { status: "failed" });
+      this.cacheSet(url, { status: "failed" });
     } else {
-      this.cache.set(url, {
+      this.cacheSet(url, {
         status: "loaded",
         title: title ?? undefined,
         faviconDataUrl: faviconDataUrl ?? undefined,
@@ -56,6 +58,20 @@ export class LinkMetadataStore {
   subscribe(fn: Listener): () => void {
     this.listeners.add(fn);
     return () => this.listeners.delete(fn);
+  }
+
+  private cacheSet(url: string, meta: LinkMeta): void {
+    this.cache.delete(url);
+    this.cache.set(url, meta);
+    if (this.cache.size > CACHE_MAX) {
+      // Evict oldest entries (first in Map iteration order)
+      const excess = this.cache.size - CACHE_MAX;
+      let i = 0;
+      for (const k of this.cache.keys()) {
+        if (i++ >= excess) break;
+        this.cache.delete(k);
+      }
+    }
   }
 
   private notify(): void {

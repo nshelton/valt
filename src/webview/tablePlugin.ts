@@ -151,14 +151,17 @@ function makeDelBtn(title: string, onDel: () => void): HTMLElement {
 
 // ── Column resize ─────────────────────────────────────────────────────────────
 
-let cleanupDrag: (() => void) | null = null;
+// Per-table cleanup to prevent cross-table handler mixup
+const dragCleanups = new WeakMap<HTMLElement, () => void>();
 
 function startResize(
   e: MouseEvent, col: number, colEls: HTMLTableColElement[], initW: number[],
   tableEl: HTMLElement, onEnd: (ws: number[]) => void, handle: HTMLElement,
+  wrap: HTMLElement,
 ): void {
   e.preventDefault();
-  if (cleanupDrag) cleanupDrag();
+  const existing = dragCleanups.get(wrap);
+  if (existing) existing();
   const startX = e.clientX;
   handle.classList.add("active");
 
@@ -179,12 +182,12 @@ function startResize(
     handle.classList.remove("active");
     document.removeEventListener("mousemove", onMove);
     document.removeEventListener("mouseup", onUp);
-    cleanupDrag = null;
+    dragCleanups.delete(wrap);
   }
 
   document.addEventListener("mousemove", onMove);
   document.addEventListener("mouseup", onUp);
-  cleanupDrag = cleanup;
+  dragCleanups.set(wrap, cleanup);
 }
 
 function attachResizeHandle(
@@ -198,7 +201,7 @@ function attachResizeHandle(
     e.preventDefault();
     e.stopPropagation();
     startResize(e, col, cols, [...initW], wrap.querySelector("table") as HTMLElement,
-      (ws) => saveWidths(ws, nodeFrom, commentFrom, commentTo, view), handle);
+      (ws) => saveWidths(ws, nodeFrom, commentFrom, commentTo, view), handle, wrap);
   });
 }
 
