@@ -8,10 +8,14 @@
  *   Right column content (multiline)
  *   <!-- /2col -->
  *
- * Rendered as a side-by-side widget with two contentEditable panes.
- * A × delete button in the top-right removes the block, restoring content as plain text.
+ * Each column is a full nested CodeMirror 6 editor, so all rich content
+ * (headings, tables, decorators, images, bold/italic, etc.) renders and
+ * edits identically to the main document.
+ *
+ * Content is serialized back to the parent document on focus-out,
+ * avoiding circular-update complexity.
  */
-import { StateField, EditorState, RangeSetBuilder } from "@codemirror/state";
+import { StateField, EditorState, RangeSetBuilder, Extension } from "@codemirror/state";
 import { DecorationSet, Decoration, WidgetType, EditorView } from "@codemirror/view";
 
 const OPEN_TAG  = "<!-- 2col -->";
@@ -53,6 +57,15 @@ function serialize(left: string, right: string): string {
   return `${OPEN_TAG}\n${left}\n${SEP_TAG}\n${right}\n${CLOSE_TAG}`;
 }
 
+// ── Nested editor lifecycle ──────────────────────────────────────────────────
+
+interface ColumnEditors {
+  left: EditorView;
+  right: EditorView;
+}
+
+const editorRegistry = new WeakMap<HTMLElement, ColumnEditors>();
+
 // ── Widget ────────────────────────────────────────────────────────────────────
 
 class TwoColumnWidget extends WidgetType {
@@ -61,53 +74,64 @@ class TwoColumnWidget extends WidgetType {
     readonly right: string,
     readonly docFrom: number,
     readonly docTo: number,
+    private readonly getExtensions: () => Extension[],
   ) { super(); }
 
   eq(other: TwoColumnWidget): boolean {
-    return other.left === this.left && other.right === this.right && other.docFrom === this.docFrom;
+    return other.left === this.left && other.right === this.right;
   }
 
-  toDOM(view: EditorView): HTMLElement {
+  toDOM(parentView: EditorView): HTMLElement {
     const wrap = document.createElement("div");
     wrap.className = "cm-twocol-wrap";
 
-    const makeCol = (initial: string): HTMLDivElement => {
+    const makeCol = (content: string): { col: HTMLDivElement; editor: EditorView } => {
       const col = document.createElement("div");
       col.className = "cm-twocol-col";
-      col.contentEditable = "true";
-      col.textContent = initial;
-      col.spellcheck = false;
-      col.addEventListener("keydown", (e) => e.stopPropagation());
-      col.addEventListener("paste", (e) => {
-        e.preventDefault();
-        document.execCommand("insertText", false, (e as ClipboardEvent).clipboardData?.getData("text/plain") ?? "");
+      const editor = new EditorView({
+        doc: content,
+        parent: col,
+        extensions: this.getExtensions(),
       });
-      return col;
+      return { col, editor };
     };
 
-    const leftCol  = makeCol(this.left);
-    const rightCol = makeCol(this.right);
+    const { col: leftCol, editor: leftEditor }  = makeCol(this.left);
+    const { col: rightCol, editor: rightEditor } = makeCol(this.right);
 
+    editorRegistry.set(wrap, { left: leftEditor, right: rightEditor });
+
+    // Commit when focus leaves the entire widget
     const commit = (): void => {
-      const l = leftCol.textContent?.trim()  ?? "";
-      const r = rightCol.textContent?.trim() ?? "";
-      view.dispatch({ changes: { from: this.docFrom, to: this.docTo, insert: serialize(l, r) } });
+      if (!wrap.isConnected) return; // widget was removed (e.g. delete button)
+      const l = leftEditor.state.doc.toString();
+      const r = rightEditor.state.doc.toString();
+      if (l === this.left && r === this.right) return; // nothing changed
+      parentView.dispatch({
+        changes: { from: this.docFrom, to: this.docTo, insert: serialize(l, r) },
+      });
     };
 
-    leftCol.addEventListener("blur",  commit);
-    rightCol.addEventListener("blur", commit);
+    wrap.addEventListener("focusout", (e: FocusEvent) => {
+      if (!wrap.isConnected) return;
+      const related = e.relatedTarget as Node | null;
+      if (related && wrap.contains(related)) return; // focus moved within widget
+      commit();
+    });
 
-    // Delete button — restores content as plain text (or removes empty blocks)
+    // Delete button — restores content as plain text
     const delBtn = document.createElement("button");
     delBtn.className = "cm-twocol-del";
     delBtn.textContent = "×";
     delBtn.title = "Delete column layout";
     delBtn.addEventListener("mousedown", (e) => {
-      e.preventDefault();
-      const l = leftCol.textContent?.trim()  ?? "";
-      const r = rightCol.textContent?.trim() ?? "";
+      e.preventDefault(); // prevent focus shift before dispatch
+      const l = leftEditor.state.doc.toString().trim();
+      const r = rightEditor.state.doc.toString().trim();
       const restored = [l, r].filter(Boolean).join("\n\n");
-      view.dispatch({ changes: { from: this.docFrom, to: this.docTo, insert: restored } });
+      parentView.dispatch({
+        changes: { from: this.docFrom, to: this.docTo, insert: restored },
+      });
     });
 
     wrap.appendChild(delBtn);
@@ -117,24 +141,37 @@ class TwoColumnWidget extends WidgetType {
     return wrap;
   }
 
+  destroy(dom: HTMLElement): void {
+    const editors = editorRegistry.get(dom);
+    if (editors) {
+      editors.left.destroy();
+      editors.right.destroy();
+      editorRegistry.delete(dom);
+    }
+  }
+
   ignoreEvent(): boolean { return true; }
 }
 
 // ── StateField ────────────────────────────────────────────────────────────────
 
-function buildDecorations(state: EditorState): DecorationSet {
+function buildDecorations(state: EditorState, getExts: () => Extension[]): DecorationSet {
   const builder = new RangeSetBuilder<Decoration>();
   for (const block of parseTwoColBlocks(state)) {
     builder.add(block.from, block.to, Decoration.replace({
-      widget: new TwoColumnWidget(block.left, block.right, block.from, block.to),
+      widget: new TwoColumnWidget(block.left, block.right, block.from, block.to, getExts),
       block: true,
     }));
   }
   return builder.finish();
 }
 
-export const twoColumnPlugin = StateField.define<DecorationSet>({
-  create(state)  { return buildDecorations(state); },
-  update(deco, tr) { return tr.docChanged ? buildDecorations(tr.state) : deco.map(tr.changes); },
-  provide(field) { return EditorView.decorations.from(field); },
-});
+export function createTwoColumnPlugin(getExtensions: () => Extension[]): StateField<DecorationSet> {
+  return StateField.define<DecorationSet>({
+    create(state)  { return buildDecorations(state, getExtensions); },
+    update(deco, tr) {
+      return tr.docChanged ? buildDecorations(tr.state, getExtensions) : deco.map(tr.changes);
+    },
+    provide(field) { return EditorView.decorations.from(field); },
+  });
+}

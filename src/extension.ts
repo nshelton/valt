@@ -1,7 +1,9 @@
 import * as vscode from "vscode";
 import * as path from "path";
 import * as fs from "fs";
-import { ValtTreeProvider } from "./treeProvider";
+import * as https from "https";
+import * as http from "http";
+import { ValtTreeProvider, ValtTreeItem, ValtDatabaseItem } from "./treeProvider";
 import { ValtTagTreeProvider, TagIndex } from "./tagTreeProvider";
 import { FavoritesTreeProvider } from "./favoritesProvider";
 import { PageIndex, generateId, extractTitle, extractEmoji, extractPageLinks } from "./pageIndex";
@@ -34,6 +36,7 @@ export function activate(context: vscode.ExtensionContext): void {
   tagTreeProvider = new ValtTagTreeProvider();
   const favoritesFile = workspaceRoot ? path.join(workspaceRoot, ".valt-favorites") : "";
   favoritesProvider = new FavoritesTreeProvider(favoritesFile);
+  treeProvider.setFavoritesProvider(favoritesProvider);
 
   const favoritesTreeView = vscode.window.createTreeView("valt.favoritesTree", {
     treeDataProvider: favoritesProvider,
@@ -154,14 +157,59 @@ export function activate(context: vscode.ExtensionContext): void {
   const removeFavoriteCmd = vscode.commands.registerCommand(
     "valt.removeFromFavorites",
     (item?: { fsPath?: string }) => {
-      if (item?.fsPath) favoritesProvider?.removeFromFavorites(item.fsPath);
+      if (item?.fsPath) {
+        favoritesProvider?.removeFromFavorites(item.fsPath);
+        treeProvider?.refresh();
+      }
+    }
+  );
+
+  const deletePageCmd = vscode.commands.registerCommand(
+    "valt.deletePage",
+    async (item?: ValtTreeItem) => {
+      if (!item?.fsPath) return;
+      const fileName = path.basename(item.fsPath);
+      const answer = await vscode.window.showWarningMessage(
+        `Delete "${fileName}"? This cannot be undone.`,
+        { modal: true },
+        "Delete"
+      );
+      if (answer !== "Delete") return;
+      try {
+        fs.unlinkSync(item.fsPath);
+        pageIndex.removeEntry(item.fsPath);
+        treeProvider?.setPageIndex(pageIndex);
+        treeProvider?.refresh();
+      } catch {
+        vscode.window.showErrorMessage("Valt: Could not delete page.");
+      }
+    }
+  );
+
+  const deleteDatabaseCmd = vscode.commands.registerCommand(
+    "valt.deleteDatabase",
+    async (item?: ValtDatabaseItem) => {
+      if (!item?.fsPath) return;
+      const folderName = path.basename(item.fsPath).replace(/^[0-9a-f]{8}\s+/, "");
+      const answer = await vscode.window.showWarningMessage(
+        `Delete database "${folderName}" and all its rows? This cannot be undone.`,
+        { modal: true },
+        "Delete"
+      );
+      if (answer !== "Delete") return;
+      try {
+        fs.rmSync(item.fsPath, { recursive: true, force: true });
+        treeProvider?.refresh();
+      } catch {
+        vscode.window.showErrorMessage("Valt: Could not delete database.");
+      }
     }
   );
 
   context.subscriptions.push(
     favoritesTreeView, fileTreeView, tagTreeView,
     openCmd, openFileCmd, refreshCmd, showHomeCmd, setTagColorCmd,
-    newSubPageCmd, removeFavoriteCmd,
+    newSubPageCmd, removeFavoriteCmd, deletePageCmd, deleteDatabaseCmd,
     cfgWatcher, mdWatcher, dbWatcher,
   );
 
@@ -195,7 +243,8 @@ function createValtPanel(
   panels.push(p);
 
   // Per-panel state (in closure)
-  let pending = pendingFilePath;
+  const lastOpen = extensionContext?.globalState.get<string>("valt.lastOpenPath");
+  let pending = pendingFilePath ?? lastOpen;
 
   p.webview.onDidReceiveMessage(
     (raw: unknown) => {
@@ -311,6 +360,25 @@ function handleWebviewMessage(message: WebviewMessage, source: vscode.WebviewPan
     case "createDatabase":
       handleCreateDatabase(message.parentDir, source);
       break;
+    case "deleteFile":
+      handleDeleteFile(message.filePath, source);
+      break;
+    case "deleteDatabase":
+      handleDeleteDatabase(message.folderPath, source);
+      break;
+    case "openUrl":
+      vscode.env.openExternal(vscode.Uri.parse(message.url));
+      break;
+    case "fetchLinkMetadata":
+      fetchLinkMetadata(message.url).then((meta) => {
+        source.webview.postMessage({
+          type: "linkMetadata",
+          url: message.url,
+          title: meta.title,
+          faviconDataUrl: meta.faviconDataUrl,
+        } satisfies ExtensionMessage);
+      });
+      break;
   }
 }
 
@@ -332,6 +400,7 @@ function handleSaveImage(
 
 function handleToggleFavorite(filePath: string, target: vscode.WebviewPanel): void {
   const isFavorited = favoritesProvider?.toggleFavorite(filePath) ?? false;
+  treeProvider?.refresh();
   target.webview.postMessage({ type: "favorites", isFavorited } satisfies ExtensionMessage);
 }
 
@@ -420,7 +489,10 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
     const root = getWorkspaceRoot();
     const rel = root ? path.relative(root, path.dirname(filePath)) : "";
     const breadcrumb = rel
-      ? rel.split(path.sep).filter(Boolean).map((seg) => seg.replace(/^[0-9a-f]{8}\s+/, ""))
+      ? rel.split(path.sep).filter(Boolean).map((seg, i, segs) => ({
+          name: seg.replace(/^[0-9a-f]{8}\s+/, ""),
+          fsPath: root ? path.join(root, ...segs.slice(0, i + 1)) : "",
+        }))
       : [];
 
     const isFavorited = favoritesProvider?.isFavorite(filePath) ?? false;
@@ -430,6 +502,7 @@ function sendFileTo(filePath: string, target: vscode.WebviewPanel): void {
     };
     target.webview.postMessage(msg);
     pushRecent(filePath);
+    extensionContext?.globalState.update("valt.lastOpenPath", filePath);
     sendRecentFiles();
   } catch {
     vscode.window.showErrorMessage(`Valt: Could not read file: ${filePath}`);
@@ -686,6 +759,42 @@ function handleCreateDatabaseRow(
   sendDatabaseTo(folderPath, target);
 }
 
+async function handleDeleteFile(filePath: string, target: vscode.WebviewPanel): Promise<void> {
+  const fileName = path.basename(filePath);
+  const answer = await vscode.window.showWarningMessage(
+    `Delete "${fileName}"? This cannot be undone.`,
+    { modal: true },
+    "Delete"
+  );
+  if (answer !== "Delete") return;
+  try {
+    fs.unlinkSync(filePath);
+    pageIndex.removeEntry(filePath);
+    treeProvider?.setPageIndex(pageIndex);
+    treeProvider?.refresh();
+    target.webview.postMessage({ type: "showHome" });
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not delete page.");
+  }
+}
+
+async function handleDeleteDatabase(folderPath: string, target: vscode.WebviewPanel): Promise<void> {
+  const folderName = path.basename(folderPath).replace(/^[0-9a-f]{8}\s+/, "");
+  const answer = await vscode.window.showWarningMessage(
+    `Delete database "${folderName}" and all its rows? This cannot be undone.`,
+    { modal: true },
+    "Delete"
+  );
+  if (answer !== "Delete") return;
+  try {
+    fs.rmSync(folderPath, { recursive: true, force: true });
+    treeProvider?.refresh();
+    target.webview.postMessage({ type: "showHome" });
+  } catch {
+    vscode.window.showErrorMessage("Valt: Could not delete database.");
+  }
+}
+
 function handleDeleteDatabaseRow(rowPath: string, target: vscode.WebviewPanel): void {
   try {
     const folderPath = path.dirname(rowPath);
@@ -724,6 +833,136 @@ function handleCreateDatabase(parentDir: string, target: vscode.WebviewPanel): v
 
   treeProvider?.refresh();
   sendDatabaseTo(folderPath, target);
+}
+
+// ── Link metadata fetcher ─────────────────────────────────────────────────────
+
+interface LinkMeta { title: string | null; faviconDataUrl: string | null; }
+
+const linkMetaCache = new Map<string, LinkMeta>();
+
+async function fetchLinkMetadata(url: string): Promise<LinkMeta> {
+  if (linkMetaCache.has(url)) return linkMetaCache.get(url)!;
+  try {
+    const html = await fetchHtml(url);
+    const title = extractHtmlTitle(html);
+    const faviconUrl = extractFaviconUrl(html, url);
+    const faviconDataUrl = faviconUrl ? await fetchFaviconAsDataUrl(faviconUrl) : null;
+    const result: LinkMeta = { title, faviconDataUrl };
+    linkMetaCache.set(url, result);
+    return result;
+  } catch {
+    const result: LinkMeta = { title: null, faviconDataUrl: null };
+    linkMetaCache.set(url, result);
+    return result;
+  }
+}
+
+function fetchHtml(url: string, redirectsLeft = 3): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const lib = url.startsWith("https") ? https : http;
+    let destroyed = false;
+    const req = lib.get(url, { timeout: 5000, headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+      if (
+        redirectsLeft > 0 &&
+        res.statusCode &&
+        res.statusCode >= 300 &&
+        res.statusCode < 400 &&
+        res.headers.location
+      ) {
+        const next = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : new URL(res.headers.location, url).href;
+        fetchHtml(next, redirectsLeft - 1).then(resolve, reject);
+        return;
+      }
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk: string) => {
+        body += chunk;
+        // Stop reading once we have the <head> section — no need for the full page
+        if (body.length > 65_536 || body.includes("</head>")) {
+          destroyed = true;
+          req.destroy();
+          resolve(body);
+        }
+      });
+      res.on("end", () => resolve(body));
+      res.on("error", (e) => { if (!destroyed) reject(e); });
+      res.on("close", () => resolve(body));
+    });
+    req.on("error", (e) => { if (!destroyed) reject(e); });
+    req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+  });
+}
+
+function extractHtmlTitle(html: string): string | null {
+  // Prefer og:title, fall back to <title>
+  const og = html.match(/<meta[^>]+property=["']og:title["'][^>]+content=["']([^"']+)["']/i)
+    ?? html.match(/<meta[^>]+content=["']([^"']+)["'][^>]+property=["']og:title["']/i);
+  if (og) return decodeHtmlEntities(og[1].trim());
+  const title = html.match(/<title[^>]*>([^<]+)<\/title>/i);
+  return title ? decodeHtmlEntities(title[1].trim()) : null;
+}
+
+function extractFaviconUrl(html: string, pageUrl: string): string | null {
+  const origin = new URL(pageUrl).origin;
+  const m = html.match(/<link[^>]+rel=["'][^"']*(?:shortcut )?icon["'][^>]+href=["']([^"']+)["']/i)
+    ?? html.match(/<link[^>]+href=["']([^"']+)["'][^>]+rel=["'][^"']*(?:shortcut )?icon["']/i);
+  if (m) {
+    const href = m[1];
+    if (href.startsWith("http")) return href;
+    if (href.startsWith("//"))   return `https:${href}`;
+    if (href.startsWith("/"))    return `${origin}${href}`;
+    return `${origin}/${href}`;
+  }
+  return `${origin}/favicon.ico`;
+}
+
+function fetchFaviconAsDataUrl(url: string, redirectsLeft = 3): Promise<string | null> {
+  return new Promise((resolve) => {
+    const lib = url.startsWith("https") ? https : http;
+    const req = lib.get(url, { timeout: 5000, headers: { "User-Agent": "Mozilla/5.0" } }, (res) => {
+      // Follow redirects — favicons are often behind a redirect chain
+      if (
+        redirectsLeft > 0 &&
+        res.statusCode &&
+        res.statusCode >= 300 &&
+        res.statusCode < 400 &&
+        res.headers.location
+      ) {
+        const next = res.headers.location.startsWith("http")
+          ? res.headers.location
+          : new URL(res.headers.location, url).href;
+        fetchFaviconAsDataUrl(next, redirectsLeft - 1).then(resolve);
+        return;
+      }
+      if (!res.statusCode || res.statusCode < 200 || res.statusCode >= 300) {
+        resolve(null); return;
+      }
+      const chunks: Buffer[] = [];
+      res.on("data", (chunk: Buffer) => chunks.push(chunk));
+      res.on("end", () => {
+        const buf = Buffer.concat(chunks);
+        // Strip charset/params from content-type so the data URL is valid
+        const ct = (res.headers["content-type"] ?? "image/x-icon").split(";")[0].trim();
+        resolve(`data:${ct};base64,${buf.toString("base64")}`);
+      });
+      res.on("error", () => resolve(null));
+    });
+    req.on("error", () => resolve(null));
+    req.on("timeout", () => { req.destroy(); resolve(null); });
+  });
+}
+
+function decodeHtmlEntities(s: string): string {
+  return s
+    .replace(/&amp;/g, "&")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&#(\d+);/g, (_, n) => String.fromCharCode(Number(n)));
 }
 
 // ── Tag index ─────────────────────────────────────────────────────────────────

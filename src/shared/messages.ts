@@ -73,7 +73,7 @@ export interface OpenFileMessage {
   children: PageLink[];   // pages one level deeper in the folder hierarchy
   createdAt: number;     // ms timestamp (0 if unavailable)
   modifiedAt: number;    // ms timestamp
-  breadcrumb: string[];  // folder names between workspace root and file
+  breadcrumb: { name: string; fsPath: string }[];  // folder names + paths between workspace root and file
   isFavorited: boolean;
 }
 
@@ -139,6 +139,14 @@ export interface DatabaseSchemaUpdatedMessage {
   schema: DatabaseSchema;
 }
 
+/** Sent when link metadata (title + favicon) has been fetched for a URL. */
+export interface LinkMetadataMessage {
+  type: "linkMetadata";
+  url: string;
+  title: string | null;
+  faviconDataUrl: string | null;
+}
+
 export type ExtensionMessage =
   | OpenFileMessage
   | FileIndexMessage
@@ -150,7 +158,8 @@ export type ExtensionMessage =
   | ImageSavedMessage
   | InsertPageLinkMessage
   | OpenDatabaseMessage
-  | DatabaseSchemaUpdatedMessage;
+  | DatabaseSchemaUpdatedMessage
+  | LinkMetadataMessage;
 
 // ── Webview → Extension ──────────────────────────────────────────────────────
 
@@ -244,6 +253,30 @@ export interface CreateDatabaseMessage {
   parentDir: string;
 }
 
+/** Ask the extension to delete the current page file. */
+export interface DeleteFileMessage {
+  type: "deleteFile";
+  filePath: string;
+}
+
+/** Ask the extension to delete a database folder. */
+export interface DeleteDatabaseMessage {
+  type: "deleteDatabase";
+  folderPath: string;
+}
+
+/** Ask the extension to open a URL in the system browser. */
+export interface OpenUrlMessage {
+  type: "openUrl";
+  url: string;
+}
+
+/** Ask the extension to fetch title + favicon for a URL and reply with LinkMetadataMessage. */
+export interface FetchLinkMetadataMessage {
+  type: "fetchLinkMetadata";
+  url: string;
+}
+
 export type WebviewMessage =
   | ReadyMessage
   | RequestFileMessage
@@ -258,4 +291,8 @@ export type WebviewMessage =
   | CreateDatabaseRowMessage
   | DeleteDatabaseRowMessage
   | RequestDatabaseMessage
-  | CreateDatabaseMessage;
+  | CreateDatabaseMessage
+  | DeleteFileMessage
+  | DeleteDatabaseMessage
+  | OpenUrlMessage
+  | FetchLinkMetadataMessage;

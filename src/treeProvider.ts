@@ -2,6 +2,7 @@ import * as vscode from "vscode";
 import * as fs from "fs";
 import * as path from "path";
 import type { PageIndex, PageEntry } from "./pageIndex";
+import { FavoritesTreeProvider } from "./favoritesProvider";
 
 // ── Database folder tree item ──────────────────────────────────────────────────
 
@@ -71,6 +72,7 @@ export class ValtTreeProvider
   readonly dropMimeTypes = ["application/vnd.code.tree.valt.fileTree"];
 
   private pageIndex: PageIndex | null = null;
+  private favoritesProvider: FavoritesTreeProvider | null = null;
 
   constructor(private readonly rootPath: string, pageIndex?: PageIndex) {
     this.pageIndex = pageIndex ?? null;
@@ -78,6 +80,10 @@ export class ValtTreeProvider
 
   setPageIndex(index: PageIndex): void {
     this.pageIndex = index;
+  }
+
+  setFavoritesProvider(provider: FavoritesTreeProvider): void {
+    this.favoritesProvider = provider;
   }
 
   refresh(): void {
@@ -209,16 +215,18 @@ export class ValtTreeProvider
         !fs.existsSync(path.join(siblingDir, ".valtdb.json"));
 
       const label = this.labelFor(fullPath, entry.name);
-      items.push(
-        new ValtTreeItem(
-          label,
-          fullPath,
-          hasChildren ? siblingDir : null,
-          hasChildren
-            ? vscode.TreeItemCollapsibleState.Collapsed
-            : vscode.TreeItemCollapsibleState.None
-        )
+      const item = new ValtTreeItem(
+        label,
+        fullPath,
+        hasChildren ? siblingDir : null,
+        hasChildren
+          ? vscode.TreeItemCollapsibleState.Collapsed
+          : vscode.TreeItemCollapsibleState.None
       );
+      if (this.favoritesProvider?.isFavorite(fullPath)) {
+        item.iconPath = new vscode.ThemeIcon("star-full");
+      }
+      items.push(item);
     }
 
     return this.sortItems(items);

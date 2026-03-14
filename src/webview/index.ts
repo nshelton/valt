@@ -2,7 +2,7 @@
  * Webview entry point — CodeMirror 6 markdown editor.
  */
 import { EditorView, keymap, highlightActiveLine, drawSelection, ViewPlugin, DecorationSet, Decoration, ViewUpdate } from "@codemirror/view";
-import { EditorState, RangeSetBuilder, Compartment } from "@codemirror/state";
+import { EditorState, RangeSetBuilder, Compartment, Extension } from "@codemirror/state";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { autocompletion } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -17,15 +17,20 @@ import { createDecoratorExtensions, createDecoratorCompletionSource } from "./de
 import { emojiCompletionSource, emojiSizePlugin } from "./emojiPlugin";
 import { createComponentMenuCompletionSource } from "./componentMenu";
 import { inlineStylePlugin, boldCommand, italicCommand } from "./inlineStylePlugin";
+import { createLinkPlugin, scrollToHeading, linkMetaUpdated } from "./linkPlugin";
+import { LinkMetadataStore } from "./linkMetadataStore";
 import { DateTimeProvider, PageProvider, TagProvider, type PageInfo } from "./decoratorProviders";
 import { createImagePlugin } from "./imagePlugin";
-import { twoColumnPlugin } from "./twoColumnPlugin";
+import { createTwoColumnPlugin } from "./twoColumnPlugin";
 import { frontmatterPlugin } from "./frontmatterPlugin";
 import styles from "./style.css";
 
 const tagProvider = new TagProvider();
 const pageProvider = new PageProvider();
 const providers = [tagProvider, pageProvider, new DateTimeProvider()];
+
+// Singleton store — persists across editor recreations so cached metadata is reused.
+const linkStore = new LinkMetadataStore();
 
 declare function acquireVsCodeApi(): {
   postMessage(msg: WebviewMessage): void;
@@ -35,6 +40,42 @@ declare function acquireVsCodeApi(): {
 
 const vscode = acquireVsCodeApi();
 
+// ── View state persistence ─────────────────────────────────────────────────
+
+interface PersistedViewState {
+  scrollPositions: Record<string, number>;  // filePath → scrollTop px
+  cursorPositions: Record<string, number>;  // filePath → char offset
+}
+
+function getPersistedState(): PersistedViewState {
+  const s = vscode.getState() as PersistedViewState | null;
+  return s ?? { scrollPositions: {}, cursorPositions: {} };
+}
+
+function saveCurrentPos(): void {
+  if (!currentFilePath || !editorView) return;
+  const s = getPersistedState();
+  s.scrollPositions[currentFilePath] = editorView.scrollDOM.scrollTop;
+  s.cursorPositions[currentFilePath] = editorView.state.selection.main.head;
+  vscode.setState(s);
+}
+
+function restorePos(filePath: string): void {
+  if (!editorView) return;
+  const s = getPersistedState();
+  const cursor = s.cursorPositions[filePath];
+  const scrollTop = s.scrollPositions[filePath];
+  if (cursor !== undefined) {
+    const safePos = Math.min(cursor, editorView.state.doc.length);
+    editorView.dispatch({ selection: { anchor: safePos } });
+  }
+  if (scrollTop !== undefined) {
+    requestAnimationFrame(() => {
+      if (editorView) editorView.scrollDOM.scrollTop = scrollTop;
+    });
+  }
+}
+
 // ── Module state ──────────────────────────────────────────────────────────────
 
 let currentFilePath = "";
@@ -42,6 +83,9 @@ let currentWebviewBaseUri = "";
 let currentIsFavorited = false;
 let currentDatabaseFolder = "";
 let editorView: EditorView | null = null;
+
+// When any link metadata arrives, trigger a re-decoration pass.
+linkStore.subscribe(() => { editorView?.dispatch({ effects: linkMetaUpdated.of(null) }); });
 let dbView: DatabaseView | null = null;
 let saveTimeout: ReturnType<typeof setTimeout> | null = null;
 let isRawMode = false;
@@ -268,14 +312,47 @@ function setupImageDrop(): void {
   document.addEventListener("paste", (e) => {
     if (!currentFilePath) return;
     const items = e.clipboardData ? Array.from(e.clipboardData.items) : [];
+
+    // Image paste takes priority
     const imageItems = items.filter((i) => i.kind === "file" && i.type.startsWith("image/"));
-    if (imageItems.length === 0) return;
-    e.preventDefault();
-    for (const item of imageItems) {
-      const file = item.getAsFile();
-      if (file) sendImageFile(file);
+    if (imageItems.length > 0) {
+      e.preventDefault();
+      for (const item of imageItems) {
+        const file = item.getAsFile();
+        if (file) sendImageFile(file);
+      }
+      return;
     }
+
   });
+}
+
+// ── Column editor extensions (for nested editors inside two-column blocks) ──
+
+function createColumnExtensions(): Extension[] {
+  return [
+    markdown({ base: markdownLanguage, codeLanguages: languages }),
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    syntaxHighlighting(headingStyles),
+    tablePlugin,
+    createImagePlugin(currentWebviewBaseUri),
+    codeBlockPlugin,
+    inlineCodePlugin,
+    inlineStylePlugin,
+    emojiSizePlugin,
+    ...createDecoratorExtensions(providers, (msg) => vscode.postMessage(msg)),
+    autocompletion({ override: [createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+    history(),
+    drawSelection(),
+    keymap.of([
+      { key: "Mod-b", run: boldCommand },
+      { key: "Mod-i", run: italicCommand },
+      ...defaultKeymap,
+      ...historyKeymap,
+      indentWithTab,
+    ]),
+    EditorView.lineWrapping,
+  ];
 }
 
 // ── Editor creation ───────────────────────────────────────────────────────────
@@ -286,6 +363,50 @@ function createEditor(content: string, webviewBaseUri: string): EditorView {
   const updateListener = EditorView.updateListener.of((update) => {
     if (update.docChanged) scheduleSave();
   });
+
+  const urlPasteHandler = EditorView.domEventHandlers({
+    paste(event, view) {
+      const text = event.clipboardData?.getData("text/plain")?.trim() ?? "";
+      if (!/^https?:\/\/\S+$/.test(text)) return false;
+      event.preventDefault();
+      const { from, to } = view.state.selection.main;
+      const selectedText = from === to ? "" : view.state.doc.sliceString(from, to);
+      const mdLink = selectedText ? `[${selectedText}](${text})` : `[${text}](${text})`;
+      view.dispatch({
+        changes: { from, to, insert: mdLink },
+        selection: { anchor: from + mdLink.length },
+      });
+      return true;
+    },
+  });
+
+  const richExtensions = [
+    syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+    syntaxHighlighting(headingStyles),
+    tablePlugin,
+    createTwoColumnPlugin(createColumnExtensions),
+    frontmatterPlugin,
+    createImagePlugin(webviewBaseUri),
+    codeBlockPlugin,
+    inlineCodePlugin,
+    inlineStylePlugin,
+    urlPasteHandler,
+    createLinkPlugin(
+      (msg) => vscode.postMessage(msg),
+      (anchor) => { if (editorView) scrollToHeading(editorView, anchor); },
+      linkStore,
+    ),
+    emojiSizePlugin,
+    ...createDecoratorExtensions(
+      providers,
+      (msg) => vscode.postMessage(msg),
+    ),
+    autocompletion({ override: [createComponentMenuCompletionSource(
+      (msg) => vscode.postMessage(msg),
+      () => currentFilePath,
+      (pos) => { pendingPageLinkPos = pos; },
+    ), createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+  ];
 
   const state = EditorState.create({
     doc: content,
@@ -306,25 +427,7 @@ function createEditor(content: string, webviewBaseUri: string): EditorView {
         base: markdownLanguage,
         codeLanguages: languages,
       }),
-      syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
-      syntaxHighlighting(headingStyles),
-      tablePlugin,
-      twoColumnPlugin,
-      frontmatterPlugin,
-      createImagePlugin(webviewBaseUri),
-      codeBlockPlugin,
-      inlineCodePlugin,
-      inlineStylePlugin,
-      emojiSizePlugin,
-      ...createDecoratorExtensions(
-        providers,
-        (msg) => vscode.postMessage(msg),
-      ),
-      autocompletion({ override: [createComponentMenuCompletionSource(
-        (msg) => vscode.postMessage(msg),
-        () => currentFilePath,
-        (pos) => { pendingPageLinkPos = pos; },
-      ), createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+      richCompartment.of(isRawMode ? [] : richExtensions),
       updateListener,
       EditorView.lineWrapping,
     ],
@@ -353,10 +456,12 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       }
       isBackNav = false;
       const isSameFile = currentFilePath === message.path;
+      if (!isSameFile) saveCurrentPos();
       currentFilePath = message.path;
       currentWebviewBaseUri = message.webviewBaseUri;
       currentIsFavorited = message.isFavorited;
       showDocument(message.content, isSameFile);
+      if (!isSameFile) restorePos(message.path);
       updateEmojiHeader(message.content);
       renderSubPageCards(message.children);
       renderTopbar(message);
@@ -408,6 +513,9 @@ function handleExtensionMessage(message: ExtensionMessage): void {
       break;
     case "databaseSchemaUpdated":
       dbView?.updateSchema(message.folderPath, message.schema);
+      break;
+    case "linkMetadata":
+      linkStore.receive(message.url, message.title, message.faviconDataUrl);
       break;
   }
 }
@@ -486,6 +594,7 @@ function showDatabase(
       <button id="topbar-back" class="topbar-back-btn" ${backStack.length === 0 ? "disabled" : ""} title="Go back">←</button>
       <span class="topbar-breadcrumb">🗃 ${escapeHtml(dbName)}</span>
       <span class="topbar-spacer"></span>
+      <button id="topbar-delete" class="topbar-delete-btn" title="Delete database">🗑</button>
     </div>
   `;
   topbarEl.style.display = "block";
@@ -493,6 +602,9 @@ function showDatabase(
   document.getElementById("topbar-back")?.addEventListener("click", () => {
     const prev = backStack.pop();
     if (prev) { isBackNav = true; vscode.postMessage({ type: "requestFile", path: prev }); }
+  });
+  document.getElementById("topbar-delete")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "deleteDatabase", folderPath: currentDatabaseFolder });
   });
 
   if (!dbView) {
@@ -551,7 +663,9 @@ function renderTopbar(msg: OpenFileMessage): void {
   const created = fmtDate(msg.createdAt);
 
   const breadcrumbHtml = msg.breadcrumb.length
-    ? `<span class="topbar-breadcrumb">${msg.breadcrumb.map(escapeHtml).join(" / ")}</span>`
+    ? `<span class="topbar-breadcrumb">${msg.breadcrumb.map((seg) =>
+        `<button class="topbar-breadcrumb-btn" data-path="${escapeAttr(seg.fsPath)}">${escapeHtml(seg.name)}</button>`
+      ).join(`<span class="topbar-breadcrumb-sep"> / </span>`)}</span>`
     : "";
 
   const metaParts: string[] = [];
@@ -580,7 +694,9 @@ function renderTopbar(msg: OpenFileMessage): void {
       ${breadcrumbHtml}
       <span class="topbar-spacer"></span>
       ${metaParts.length ? `<span class="topbar-meta">${metaParts.join(" · ")}</span>` : ""}
+      <button id="topbar-raw" class="topbar-raw-btn${isRawMode ? " active" : ""}" title="Toggle raw mode">raw</button>
       <button id="topbar-star" class="topbar-star-btn${currentIsFavorited ? " active" : ""}" title="Favorite">${currentIsFavorited ? "★" : "☆"}</button>
+      <button id="topbar-delete" class="topbar-delete-btn" title="Delete page">🗑</button>
       <button id="topbar-new" class="topbar-new-btn" title="New page">+</button>
     </div>
     ${linksRow}
@@ -592,16 +708,44 @@ function renderTopbar(msg: OpenFileMessage): void {
     const prev = backStack.pop();
     if (prev) { isBackNav = true; vscode.postMessage({ type: "requestFile", path: prev }); }
   });
+  document.getElementById("topbar-raw")?.addEventListener("click", () => {
+    isRawMode = !isRawMode;
+    document.getElementById("topbar-raw")?.classList.toggle("active", isRawMode);
+    if (editorView) {
+      const richExts = isRawMode ? [] : [
+        syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
+        syntaxHighlighting(headingStyles),
+        tablePlugin,
+        createTwoColumnPlugin(createColumnExtensions),
+        frontmatterPlugin,
+        createImagePlugin(currentWebviewBaseUri),
+        codeBlockPlugin,
+        inlineCodePlugin,
+        inlineStylePlugin,
+        emojiSizePlugin,
+        ...createDecoratorExtensions(providers, (msg) => vscode.postMessage(msg)),
+        autocompletion({ override: [createComponentMenuCompletionSource(
+          (msg) => vscode.postMessage(msg),
+          () => currentFilePath,
+          (pos) => { pendingPageLinkPos = pos; },
+        ), createDecoratorCompletionSource(providers), emojiCompletionSource] }),
+      ];
+      editorView.dispatch({ effects: richCompartment.reconfigure(richExts) });
+    }
+  });
   document.getElementById("topbar-star")?.addEventListener("click", () => {
     vscode.postMessage({ type: "toggleFavorite", filePath: currentFilePath });
+  });
+  document.getElementById("topbar-delete")?.addEventListener("click", () => {
+    vscode.postMessage({ type: "deleteFile", filePath: currentFilePath });
   });
   document.getElementById("topbar-new")?.addEventListener("click", () => {
     vscode.postMessage({ type: "createFile" });
   });
 
-  topbarEl.querySelectorAll<HTMLElement>(".topbar-chip").forEach((chip) => {
-    chip.addEventListener("click", () => {
-      const p = chip.dataset.path;
+  topbarEl.querySelectorAll<HTMLElement>(".topbar-chip, .topbar-breadcrumb-btn").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const p = btn.dataset.path;
       if (p) vscode.postMessage({ type: "requestFile", path: p });
     });
   });

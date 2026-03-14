@@ -6,7 +6,7 @@
     "url": "https://github.com/nshelton/valt"
   },
   "description": "A lightweight personal knowledge base for VSCode — markdown files, beautifully rendered.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "engines": {
     "vscode": "^1.85.0"
   },
@@ -46,6 +46,16 @@
       {
         "command": "valt.removeFromFavorites",
         "title": "Remove from Favorites"
+      },
+      {
+        "command": "valt.deletePage",
+        "title": "Delete Page",
+        "icon": "$(trash)"
+      },
+      {
+        "command": "valt.deleteDatabase",
+        "title": "Delete Database",
+        "icon": "$(trash)"
       }
     ],
     "viewsContainers": {
@@ -96,6 +106,16 @@
           "command": "valt.newSubPage",
           "when": "view == valt.fileTree && viewItem == valtPage",
           "group": "1_create@1"
+        },
+        {
+          "command": "valt.deletePage",
+          "when": "view == valt.fileTree && viewItem == valtPage",
+          "group": "inline"
+        },
+        {
+          "command": "valt.deleteDatabase",
+          "when": "view == valt.fileTree && viewItem == valtDatabase",
+          "group": "inline"
         },
         {
           "command": "valt.removeFromFavorites",
