@@ -695,8 +695,23 @@ html, body {
   background: #212121;
   border-left: 2px solid #3a3a3a;
   padding-left: 12px !important;
-  color: var(--text-muted);
+  color: #d4d4d4;
 }
+
+/* Token colors inside code blocks — must out-specifiy the line rule above */
+.cm-editor .cm-line.cm-codeblock .tok-keyword     { color: #c792ea; }
+.cm-editor .cm-line.cm-codeblock .tok-string      { color: #c3e88d; }
+.cm-editor .cm-line.cm-codeblock .tok-number      { color: #f78c6c; }
+.cm-editor .cm-line.cm-codeblock .tok-comment     { color: #546e7a; font-style: italic; }
+.cm-editor .cm-line.cm-codeblock .tok-variableName { color: #f07178; }
+.cm-editor .cm-line.cm-codeblock .tok-typeName    { color: #ffcb6b; }
+.cm-editor .cm-line.cm-codeblock .tok-operator    { color: #89ddff; }
+.cm-editor .cm-line.cm-codeblock .tok-propertyName { color: #82aaff; }
+.cm-editor .cm-line.cm-codeblock .tok-bool        { color: #ff5370; }
+.cm-editor .cm-line.cm-codeblock .tok-punctuation { color: #89ddff; }
+.cm-editor .cm-line.cm-codeblock .tok-meta        { color: #ffcb6b; }
+.cm-editor .cm-line.cm-codeblock .tok-atom        { color: #f78c6c; }
+.cm-editor .cm-line.cm-codeblock .tok-definition  { color: #82aaff; }
 
 .cm-editor .cm-line.cm-codeblock-fence {
   color: var(--text-faint);

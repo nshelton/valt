@@ -8,7 +8,7 @@ import { autocompletion } from "@codemirror/autocomplete";
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { languages } from "@codemirror/language-data";
 import { syntaxHighlighting, defaultHighlightStyle, HighlightStyle, syntaxTree } from "@codemirror/language";
-import { tags } from "@lezer/highlight";
+import { tags, classHighlighter } from "@lezer/highlight";
 import { searchKeymap, highlightSelectionMatches } from "@codemirror/search";
 import type { ExtensionMessage, WebviewMessage, RecentFileEntry, OpenFileMessage } from "../shared/messages";
 import { assertNever } from "../shared/messages";
@@ -333,6 +333,7 @@ function setupImageDrop(): void {
 function createColumnExtensions(): Extension[] {
   return [
     markdown({ base: markdownLanguage, codeLanguages: languages }),
+    syntaxHighlighting(classHighlighter),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     syntaxHighlighting(headingStyles),
     tablePlugin,
@@ -382,6 +383,7 @@ function createEditor(content: string, webviewBaseUri: string): EditorView {
   });
 
   const richExtensions = [
+    syntaxHighlighting(classHighlighter),
     syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
     syntaxHighlighting(headingStyles),
     tablePlugin,
@@ -716,6 +718,7 @@ function renderTopbar(msg: OpenFileMessage): void {
     document.getElementById("topbar-raw")?.classList.toggle("active", isRawMode);
     if (editorView) {
       const richExts = isRawMode ? [] : [
+        syntaxHighlighting(classHighlighter),
         syntaxHighlighting(defaultHighlightStyle, { fallback: true }),
         syntaxHighlighting(headingStyles),
         tablePlugin,
